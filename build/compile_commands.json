@@ -1,0 +1,104 @@
+[
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build",
+  "command": "/usr/bin/g++ -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/include -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=gnu++17 -o CMakeFiles/broker.dir/src/main.cpp.o -c /home/flik/soft/OTUS/async-message-broker/src/main.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/src/main.cpp",
+  "output": "CMakeFiles/broker.dir/src/main.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build",
+  "command": "/usr/bin/g++ -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/include -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=gnu++17 -o CMakeFiles/broker.dir/src/server.cpp.o -c /home/flik/soft/OTUS/async-message-broker/src/server.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/src/server.cpp",
+  "output": "CMakeFiles/broker.dir/src/server.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build",
+  "command": "/usr/bin/g++ -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/include -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=gnu++17 -o CMakeFiles/broker.dir/src/message.cpp.o -c /home/flik/soft/OTUS/async-message-broker/src/message.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/src/message.cpp",
+  "output": "CMakeFiles/broker.dir/src/message.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build",
+  "command": "/usr/bin/g++ -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/include -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=gnu++17 -o CMakeFiles/broker.dir/src/router.cpp.o -c /home/flik/soft/OTUS/async-message-broker/src/router.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/src/router.cpp",
+  "output": "CMakeFiles/broker.dir/src/router.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build",
+  "command": "/usr/bin/g++ -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/include -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=gnu++17 -o CMakeFiles/broker.dir/src/zmq_session.cpp.o -c /home/flik/soft/OTUS/async-message-broker/src/zmq_session.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/src/zmq_session.cpp",
+  "output": "CMakeFiles/broker.dir/src/zmq_session.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build",
+  "command": "/usr/bin/g++ -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/include -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=gnu++17 -o CMakeFiles/broker.dir/src/storage.cpp.o -c /home/flik/soft/OTUS/async-message-broker/src/storage.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/src/storage.cpp",
+  "output": "CMakeFiles/broker.dir/src/storage.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build",
+  "command": "/usr/bin/g++ -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/include -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=gnu++17 -o CMakeFiles/broker.dir/src/dispatcher.cpp.o -c /home/flik/soft/OTUS/async-message-broker/src/dispatcher.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/src/dispatcher.cpp",
+  "output": "CMakeFiles/broker.dir/src/dispatcher.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build",
+  "command": "/usr/bin/g++ -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/include -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=gnu++17 -o CMakeFiles/broker.dir/src/offline_queue.cpp.o -c /home/flik/soft/OTUS/async-message-broker/src/offline_queue.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/src/offline_queue.cpp",
+  "output": "CMakeFiles/broker.dir/src/offline_queue.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build",
+  "command": "/usr/bin/g++ -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/include -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=gnu++17 -o CMakeFiles/broker.dir/src/correlation_engine.cpp.o -c /home/flik/soft/OTUS/async-message-broker/src/correlation_engine.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/src/correlation_engine.cpp",
+  "output": "CMakeFiles/broker.dir/src/correlation_engine.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build",
+  "command": "/usr/bin/g++ -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/include -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=gnu++17 -o CMakeFiles/broker.dir/src/metrics.cpp.o -c /home/flik/soft/OTUS/async-message-broker/src/metrics.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/src/metrics.cpp",
+  "output": "CMakeFiles/broker.dir/src/metrics.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-build",
+  "command": "/usr/bin/g++ -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=c++17 -o CMakeFiles/spdlog.dir/src/spdlog.cpp.o -c /home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/spdlog.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/spdlog.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/spdlog.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-build",
+  "command": "/usr/bin/g++ -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=c++17 -o CMakeFiles/spdlog.dir/src/stdout_sinks.cpp.o -c /home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/stdout_sinks.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/stdout_sinks.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/stdout_sinks.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-build",
+  "command": "/usr/bin/g++ -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=c++17 -o CMakeFiles/spdlog.dir/src/color_sinks.cpp.o -c /home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/color_sinks.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/color_sinks.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/color_sinks.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-build",
+  "command": "/usr/bin/g++ -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=c++17 -o CMakeFiles/spdlog.dir/src/file_sinks.cpp.o -c /home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/file_sinks.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/file_sinks.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/file_sinks.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-build",
+  "command": "/usr/bin/g++ -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=c++17 -o CMakeFiles/spdlog.dir/src/async.cpp.o -c /home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/async.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/async.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/async.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-build",
+  "command": "/usr/bin/g++ -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=c++17 -o CMakeFiles/spdlog.dir/src/cfg.cpp.o -c /home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/cfg.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/cfg.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/cfg.cpp.o"
+},
+{
+  "directory": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-build",
+  "command": "/usr/bin/g++ -DSPDLOG_COMPILED_LIB -I/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/include -g -std=c++17 -o CMakeFiles/spdlog.dir/src/bundled_fmtlib_format.cpp.o -c /home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/bundled_fmtlib_format.cpp",
+  "file": "/home/flik/soft/OTUS/async-message-broker/build/_deps/spdlog-src/src/bundled_fmtlib_format.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/bundled_fmtlib_format.cpp.o"
+}
+]
