@@ -1,31 +1,32 @@
 #include <iostream>
 #include <csignal>
 #include <atomic>
+#include <thread>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
-// Глобальный флаг для graceful shutdown
+#include "server.hpp"
+
 std::atomic<bool> running{true};
 
-void signal_handler(int signal) {
+void SignalHandler(int signal) {
     spdlog::info("Received signal {}, shutting down...", signal);
     running = false;
 }
 
-void setup_signal_handlers() {
-    std::signal(SIGINT, signal_handler);
-    std::signal(SIGTERM, signal_handler);
+void SetupSignalHandlers() {
+    std::signal(SIGINT, SignalHandler);
+    std::signal(SIGTERM, SignalHandler);
 }
 
-void setup_logging(const std::string& log_level = "info") {
+void SetupLogging(const std::string& log_level = "info") {
     auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("broker.log", true);
     
     std::vector<spdlog::sink_ptr> sinks{console_sink, file_sink};
     auto logger = std::make_shared<spdlog::logger>("broker", sinks.begin(), sinks.end());
     
-    // Установка уровня логирования
     if (log_level == "trace") logger->set_level(spdlog::level::trace);
     else if (log_level == "debug") logger->set_level(spdlog::level::debug);
     else if (log_level == "info") logger->set_level(spdlog::level::info);
@@ -38,7 +39,7 @@ void setup_logging(const std::string& log_level = "info") {
     spdlog::set_default_logger(logger);
 }
 
-void print_help(const char* program_name) {
+void PrintHelp(const char* program_name) {
     std::cout << "Usage: " << program_name << " [OPTIONS]\n"
               << "Options:\n"
               << "  --port PORT         ZeroMQ listen port (default: 5555)\n"
@@ -48,21 +49,21 @@ void print_help(const char* program_name) {
               << "  --help              Show this help message\n";
 }
 
-struct Config {
+struct CommandLineConfig {
     int port = 5555;
     std::string db_path = "./broker.db";
-    int threads = 0;  // 0 = auto
+    int threads = 0;
     std::string log_level = "info";
 };
 
-Config parse_args(int argc, char* argv[]) {
-    Config config;
+CommandLineConfig ParseArgs(int argc, char* argv[]) {
+    CommandLineConfig config;
     
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         
         if (arg == "--help") {
-            print_help(argv[0]);
+            PrintHelp(argv[0]);
             exit(0);
         } else if (arg == "--port" && i + 1 < argc) {
             config.port = std::stoi(argv[++i]);
@@ -74,12 +75,11 @@ Config parse_args(int argc, char* argv[]) {
             config.log_level = argv[++i];
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
-            print_help(argv[0]);
+            PrintHelp(argv[0]);
             exit(1);
         }
     }
     
-    // Если threads = 0, используем количество ядер
     if (config.threads == 0) {
         config.threads = std::thread::hardware_concurrency();
         if (config.threads == 0) config.threads = 1;
@@ -89,31 +89,34 @@ Config parse_args(int argc, char* argv[]) {
 }
 
 int main(int argc, char* argv[]) {
-    // Парсинг аргументов
-    auto config = parse_args(argc, argv);
-    
-    // Настройка логирования
-    setup_logging(config.log_level);
+    auto cmd_config = ParseArgs(argc, argv);
+    SetupLogging(cmd_config.log_level);
     
     spdlog::info("Starting Async Message Broker v1.0.0");
     spdlog::info("Configuration: port={}, db_path={}, threads={}, log_level={}",
-                 config.port, config.db_path, config.threads, config.log_level);
+                 cmd_config.port, cmd_config.db_path, cmd_config.threads, cmd_config.log_level);
     
-    // Настройка обработчиков сигналов
-    setup_signal_handlers();
+    SetupSignalHandlers();
     
-    // TODO: Здесь будет инициализация и запуск брокера
-    // Server server(config);
-    // server.run();
+    broker::Config broker_config;
+    broker_config.Port = cmd_config.port;
+    broker_config.DbPath = cmd_config.db_path;
+    broker_config.Threads = cmd_config.threads;
+    broker_config.LogLevel = cmd_config.log_level;
     
-    spdlog::info("Broker initialized, waiting for connections...");
+    broker::Server server(broker_config);
     
-    // Основной цикл (временно)
+    std::thread server_thread([&server]() {
+        server.Run();
+    });
+    
     while (running) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     
-    spdlog::info("Broker shutting down...");
+    server.Stop();
+    server_thread.join();
     
+    spdlog::info("Broker shutdown complete");
     return 0;
 }

@@ -4,21 +4,26 @@ project(AsyncMessageBroker VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Boost
-find_package(Boost 1.82 REQUIRED COMPONENTS system)
+# ============================================================================
+# Поиск зависимостей
+# ============================================================================
 
-# ZeroMQ
+find_package(Boost 1.82 REQUIRED COMPONENTS system)
+find_package(Threads REQUIRED)
+
 find_library(ZMQ_LIB NAMES zmq)
-find_path(ZMQ_INCLUDE NAMES zmq.hpp)
+find_path(ZMQ_INCLUDE NAMES zmq.h)
 
 if(NOT ZMQ_LIB OR NOT ZMQ_INCLUDE)
-    message(FATAL_ERROR "ZeroMQ not found. Install libzmq3-dev and libcppzmq-dev")
+    message(FATAL_ERROR "ZeroMQ not found. Install libzmq3-dev")
 endif()
 
-message(STATUS "ZeroMQ library: ${ZMQ_LIB}")
-message(STATUS "ZeroMQ include: ${ZMQ_INCLUDE}")
+find_path(CPPZMQ_INCLUDE NAMES zmq.hpp PATHS /usr/include /usr/local/include)
 
-# SQLite3
+if(NOT CPPZMQ_INCLUDE)
+    message(FATAL_ERROR "cppzmq not found. Install libcppzmq-dev")
+endif()
+
 find_package(SQLite3 REQUIRED)
 
 # spdlog
@@ -30,7 +35,10 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(spdlog)
 
-# Исходники
+# ============================================================================
+# Основная программа
+# ============================================================================
+
 set(SOURCES
     src/main.cpp
     src/server.cpp
@@ -50,6 +58,7 @@ target_include_directories(broker PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${Boost_INCLUDE_DIRS}
     ${ZMQ_INCLUDE}
+    ${CPPZMQ_INCLUDE}
 )
 
 target_link_libraries(broker
@@ -57,6 +66,48 @@ target_link_libraries(broker
     ${ZMQ_LIB}
     SQLite::SQLite3
     spdlog::spdlog
+    Threads::Threads
 )
+
+# ============================================================================
+# Тестовый сервер для отладки
+# ============================================================================
+
+add_executable(test_server src/test_server.cpp)
+
+target_include_directories(test_server PRIVATE
+    ${ZMQ_INCLUDE}
+    ${CPPZMQ_INCLUDE}
+)
+
+target_link_libraries(test_server
+    ${ZMQ_LIB}
+    spdlog::spdlog
+    Threads::Threads
+)
+
+# ============================================================================
+# Примеры клиентов
+# ============================================================================
+
+option(BUILD_EXAMPLES "Build example clients" ON)
+
+if(BUILD_EXAMPLES)
+    add_executable(simple_client examples/simple_client.cpp)
+    target_link_libraries(simple_client ${ZMQ_LIB})
+    target_include_directories(simple_client PRIVATE ${ZMQ_INCLUDE} ${CPPZMQ_INCLUDE})
+    
+    add_executable(alice_client examples/cpp_client/client.cpp)
+    target_link_libraries(alice_client ${ZMQ_LIB})
+    target_include_directories(alice_client PRIVATE ${ZMQ_INCLUDE} ${CPPZMQ_INCLUDE})
+    
+    add_executable(bob_client examples/cpp_client/bob_client.cpp)
+    target_link_libraries(bob_client ${ZMQ_LIB})
+    target_include_directories(bob_client PRIVATE ${ZMQ_INCLUDE} ${CPPZMQ_INCLUDE})
+endif()
+
+# ============================================================================
+# Установка
+# ============================================================================
 
 install(TARGETS broker DESTINATION bin)
