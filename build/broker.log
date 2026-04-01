@@ -1,94 +1,53 @@
-[2026-04-01 21:35:00.213] [info] [:] Starting Async Message Broker v1.0.0
-[2026-04-01 21:35:00.213] [info] [:] Configuration: port=5555, db_path=./broker.db, threads=8, log_level=debug
-[2026-04-01 21:35:00.214] [info] [:] Initializing server...
-[2026-04-01 21:35:00.214] [info] [:] Storage initialized with path: ./broker.db
-[2026-04-01 21:35:00.214] [info] [:] Router initialized
-[2026-04-01 21:35:00.214] [info] [:] ZeroMQ ROUTER socket bound to tcp://*:5555
-[2026-04-01 21:35:00.214] [info] [:] Starting server...
-[2026-04-01 21:35:00.214] [debug] [:] ZmqPollThread created
-[2026-04-01 21:35:00.214] [info] [:] ZeroMQ poll thread started
-[2026-04-01 21:35:00.214] [debug] [:] Asio thread started
-[2026-04-01 21:35:00.214] [debug] [:] Asio thread started
-[2026-04-01 21:35:00.214] [debug] [:] Asio thread started
-[2026-04-01 21:35:00.215] [debug] [:] Asio thread started
-[2026-04-01 21:35:00.215] [debug] [:] Asio thread started
-[2026-04-01 21:35:00.215] [debug] [:] Asio thread started
-[2026-04-01 21:35:00.215] [info] [:] Server started with 8 threads
-[2026-04-01 21:35:00.215] [debug] [:] Asio thread started
-[2026-04-01 21:35:00.215] [debug] [:] Asio thread started
-[2026-04-01 21:35:07.117] [debug] [:] ZMQ_POLLIN event received
-[2026-04-01 21:35:07.118] [debug] [:] Received identity: bob_client (10 bytes)
-[2026-04-01 21:35:07.118] [debug] [:] Received data, size: 18
-[2026-04-01 21:35:07.118] [debug] [:] Data hex: 01 01 00 00 00 00 00 00 00 00 00 03 00 00 00 62 6f 62 
-[2026-04-01 21:35:07.118] [debug] [:] Deserialized: Message{type=Register, needs_reply=false, corr_id=0, sender=bob, dest=, payload_size=0}
-[2026-04-01 21:35:07.118] [debug] [:] Routing message: Message{type=Register, needs_reply=false, corr_id=0, sender=bob, dest=, payload_size=0}
-[2026-04-01 21:35:07.118] [info] [:] Registering client: bob
-[2026-04-01 21:35:07.118] [debug] [:] ZmqSession created for identity with size: 10
-[2026-04-01 21:35:07.118] [debug] [:] Client registered: bob (identity size: 10)
-[2026-04-01 21:35:07.118] [info] [:] Client bob registered successfully
-[2026-04-01 21:35:07.118] [info] [:] Delivering offline messages to: bob
-[2026-04-01 21:35:07.118] [debug] [:] Flushing queue for client bob, size: 0
-[2026-04-01 21:35:07.118] [info] [:] === Active clients (1) ===
-[2026-04-01 21:35:07.118] [info] [:]   - bob (identity size: 10)
-[2026-04-01 21:35:07.118] [debug] [:] No more messages in batch
-[2026-04-01 21:35:10.301] [debug] [:] ZMQ_POLLIN event received
-[2026-04-01 21:35:10.301] [debug] [:] Received identity: test_client (11 bytes)
-[2026-04-01 21:35:10.301] [debug] [:] Received data, size: 19
-[2026-04-01 21:35:10.302] [debug] [:] Data hex: 01 01 00 00 00 00 00 00 00 00 00 04 00 00 00 74 65 73 74 
-[2026-04-01 21:35:10.302] [debug] [:] Deserialized: Message{type=Register, needs_reply=false, corr_id=0, sender=test, dest=, payload_size=0}
-[2026-04-01 21:35:10.302] [debug] [:] Routing message: Message{type=Register, needs_reply=false, corr_id=0, sender=test, dest=, payload_size=0}
-[2026-04-01 21:35:10.302] [info] [:] Registering client: test
-[2026-04-01 21:35:10.302] [debug] [:] ZmqSession created for identity with size: 11
-[2026-04-01 21:35:10.302] [debug] [:] Client registered: test (identity size: 11)
-[2026-04-01 21:35:10.302] [info] [:] Client test registered successfully
-[2026-04-01 21:35:10.302] [info] [:] Delivering offline messages to: test
-[2026-04-01 21:35:10.302] [debug] [:] Flushing queue for client test, size: 0
-[2026-04-01 21:35:10.302] [info] [:] === Active clients (2) ===
-[2026-04-01 21:35:10.302] [info] [:]   - test (identity size: 11)
-[2026-04-01 21:35:10.302] [info] [:]   - bob (identity size: 10)
-[2026-04-01 21:35:10.302] [debug] [:] No more messages in batch
-[2026-04-01 21:35:10.302] [debug] [:] ZmqPollThread alive (1000 iterations), waiting for messages...
-[2026-04-01 21:35:10.801] [debug] [:] ZMQ_POLLIN event received
-[2026-04-01 21:35:10.801] [debug] [:] Received identity: test_client (11 bytes)
-[2026-04-01 21:35:10.801] [debug] [:] Received data, size: 27
-[2026-04-01 21:35:10.801] [debug] [:] Data hex: 01 02 01 00 00 00 00 00 00 30 39 04 03 00 05 74 65 73 74 62 6f 62 48 65 6c 6c 6f 
-[2026-04-01 21:35:10.801] [debug] [:] Deserialized: Message{type=Message, needs_reply=true, corr_id=12345, sender=test, dest=bob, payload_size=5}
-[2026-04-01 21:35:10.801] [debug] [:] Routing message: Message{type=Message, needs_reply=true, corr_id=12345, sender=test, dest=bob, payload_size=5}
-[2026-04-01 21:35:10.801] [debug] [:] Routing message to: bob
-[2026-04-01 21:35:10.801] [debug] [:] Destination bob online, sending immediately
-[2026-04-01 21:35:10.802] [debug] [:] Message sent to client bob: Message{type=Message, needs_reply=true, corr_id=12345, sender=test, dest=bob, payload_size=5}
-[2026-04-01 21:35:10.802] [debug] [:] No more messages in batch
-[2026-04-01 21:35:10.802] [debug] [:] ZMQ_POLLIN event received
-[2026-04-01 21:35:10.802] [debug] [:] Received identity: bob_client (10 bytes)
-[2026-04-01 21:35:10.802] [debug] [:] Received data, size: 34
-[2026-04-01 21:35:10.802] [debug] [:] Data hex: 01 03 00 00 00 00 00 00 00 30 39 03 04 00 0c 62 6f 62 74 65 73 74 48 65 6c 6c 6f 2c 20 74 65 73 
-[2026-04-01 21:35:10.802] [debug] [:] Deserialized: Message{type=Reply, needs_reply=false, corr_id=12345, sender=bob, dest=test, payload_size=12}
-[2026-04-01 21:35:10.802] [debug] [:] Routing message: Message{type=Reply, needs_reply=false, corr_id=12345, sender=bob, dest=test, payload_size=12}
-[2026-04-01 21:35:10.802] [debug] [:] Handling reply with correlation_id: 12345
-[2026-04-01 21:35:10.802] [debug] [:] Reply destination: test
-[2026-04-01 21:35:10.802] [debug] [:] Destination test online, sending reply immediately
-[2026-04-01 21:35:10.802] [debug] [:] Message sent to client test: Message{type=Reply, needs_reply=false, corr_id=12345, sender=bob, dest=test, payload_size=12}
-[2026-04-01 21:35:10.803] [debug] [:] No more messages in batch
-[2026-04-01 21:35:20.372] [debug] [:] ZmqPollThread alive (2000 iterations), waiting for messages...
-[2026-04-01 21:35:30.480] [debug] [:] ZmqPollThread alive (3000 iterations), waiting for messages...
-[2026-04-01 21:35:40.581] [debug] [:] ZmqPollThread alive (4000 iterations), waiting for messages...
-[2026-04-01 21:35:50.668] [debug] [:] ZmqPollThread alive (5000 iterations), waiting for messages...
-[2026-04-01 21:36:00.763] [debug] [:] ZmqPollThread alive (6000 iterations), waiting for messages...
-[2026-04-01 21:36:10.860] [debug] [:] ZmqPollThread alive (7000 iterations), waiting for messages...
-[2026-04-01 21:36:20.969] [debug] [:] ZmqPollThread alive (8000 iterations), waiting for messages...
-[2026-04-01 21:36:31.056] [debug] [:] ZmqPollThread alive (9000 iterations), waiting for messages...
-[2026-04-01 21:36:41.153] [debug] [:] ZmqPollThread alive (10000 iterations), waiting for messages...
-[2026-04-01 21:36:51.244] [debug] [:] ZmqPollThread alive (11000 iterations), waiting for messages...
-[2026-04-01 21:37:01.343] [debug] [:] ZmqPollThread alive (12000 iterations), waiting for messages...
-[2026-04-01 21:37:11.432] [debug] [:] ZmqPollThread alive (13000 iterations), waiting for messages...
-[2026-04-01 21:37:21.533] [debug] [:] ZmqPollThread alive (14000 iterations), waiting for messages...
-[2026-04-01 21:37:31.634] [debug] [:] ZmqPollThread alive (15000 iterations), waiting for messages...
-[2026-04-01 21:37:41.745] [debug] [:] ZmqPollThread alive (16000 iterations), waiting for messages...
-[2026-04-01 21:37:51.855] [debug] [:] ZmqPollThread alive (17000 iterations), waiting for messages...
-[2026-04-01 21:38:01.989] [debug] [:] ZmqPollThread alive (18000 iterations), waiting for messages...
-[2026-04-01 21:38:12.140] [debug] [:] ZmqPollThread alive (19000 iterations), waiting for messages...
-[2026-04-01 21:38:22.274] [debug] [:] ZmqPollThread alive (20000 iterations), waiting for messages...
-[2026-04-01 21:38:32.409] [debug] [:] ZmqPollThread alive (21000 iterations), waiting for messages...
-[2026-04-01 21:38:42.530] [debug] [:] ZmqPollThread alive (22000 iterations), waiting for messages...
-[2026-04-01 21:38:52.630] [debug] [:] ZmqPollThread alive (23000 iterations), waiting for messages...
-[2026-04-01 21:39:02.754] [debug] [:] ZmqP
+[2026-04-01 21:47:11.269] [info] [:] Starting Async Message Broker v1.0.0
+[2026-04-01 21:47:11.269] [info] [:] Configuration: port=5555, db_path=./broker.db, threads=8, log_level=debug
+[2026-04-01 21:47:11.270] [info] [:] Initializing server...
+[2026-04-01 21:47:11.270] [info] [:] Storage initialized with path: ./broker.db
+[2026-04-01 21:47:11.270] [info] [:] Router initialized
+[2026-04-01 21:47:11.270] [info] [:] ZeroMQ ROUTER socket bound to tcp://*:5555
+[2026-04-01 21:47:11.270] [debug] [:] ZeroMQ file descriptor: 9
+[2026-04-01 21:47:11.270] [info] [:] ZeroMQ integrated with Boost.Asio via FD
+[2026-04-01 21:47:11.270] [info] [:] Starting server...
+[2026-04-01 21:47:11.270] [debug] [:] Asio thread started
+[2026-04-01 21:47:11.270] [debug] [:] Asio thread started
+[2026-04-01 21:47:11.270] [debug] [:] Asio thread started
+[2026-04-01 21:47:11.270] [debug] [:] Asio thread started
+[2026-04-01 21:47:11.270] [debug] [:] Asio thread started
+[2026-04-01 21:47:11.270] [debug] [:] Asio thread started
+[2026-04-01 21:47:11.270] [debug] [:] Asio thread started
+[2026-04-01 21:47:11.270] [info] [:] Server started with 8 threads
+[2026-04-01 21:47:11.270] [debug] [:] Asio thread started
+[2026-04-01 21:47:20.395] [debug] [:] ZMQ_POLLIN event received
+[2026-04-01 21:47:20.395] [debug] [:] Received identity: bob_client
+[2026-04-01 21:47:20.395] [debug] [:] Received data, size: 18
+[2026-04-01 21:47:20.396] [debug] [:] Deserialized: Message{type=Register, needs_reply=false, corr_id=0, sender=bob, dest=, payload_size=0}
+[2026-04-01 21:47:20.396] [debug] [:] Routing message: Message{type=Register, needs_reply=false, corr_id=0, sender=bob, dest=, payload_size=0}
+[2026-04-01 21:47:20.396] [info] [:] Registering client: bob
+[2026-04-01 21:47:20.396] [debug] [:] ZmqSession created for identity with size: 10
+[2026-04-01 21:47:20.396] [debug] [:] Client registered: bob (identity size: 10)
+[2026-04-01 21:47:20.396] [info] [:] Client bob registered successfully
+[2026-04-01 21:47:20.396] [info] [:] Delivering offline messages to: bob
+[2026-04-01 21:47:20.396] [debug] [:] Flushing queue for client bob, size: 0
+[2026-04-01 21:47:20.396] [info] [:] === Active clients (1) ===
+[2026-04-01 21:47:20.396] [info] [:]   - bob (identity size: 10)
+[2026-04-01 21:47:23.778] [debug] [:] ZMQ_POLLIN event received
+[2026-04-01 21:47:23.778] [debug] [:] Received identity: test_client
+[2026-04-01 21:47:23.778] [debug] [:] Received data, size: 19
+[2026-04-01 21:47:23.778] [debug] [:] Deserialized: Message{type=Register, needs_reply=false, corr_id=0, sender=test, dest=, payload_size=0}
+[2026-04-01 21:47:23.778] [debug] [:] Routing message: Message{type=Register, needs_reply=false, corr_id=0, sender=test, dest=, payload_size=0}
+[2026-04-01 21:47:23.778] [info] [:] Registering client: test
+[2026-04-01 21:47:23.778] [debug] [:] ZmqSession created for identity with size: 11
+[2026-04-01 21:47:23.779] [debug] [:] Client registered: test (identity size: 11)
+[2026-04-01 21:47:23.779] [info] [:] Client test registered successfully
+[2026-04-01 21:47:23.779] [info] [:] Delivering offline messages to: test
+[2026-04-01 21:47:23.779] [debug] [:] Flushing queue for client test, size: 0
+[2026-04-01 21:47:23.779] [info] [:] === Active clients (2) ===
+[2026-04-01 21:47:23.779] [info] [:]   - test (identity size: 11)
+[2026-04-01 21:47:23.779] [info] [:]   - bob (identity size: 10)
+[2026-04-01 21:47:24.278] [debug] [:] ZMQ_POLLIN event received
+[2026-04-01 21:47:24.278] [debug] [:] Received identity: test_client
+[2026-04-01 21:47:24.278] [debug] [:] Received data, size: 27
+[2026-04-01 21:47:24.279] [debug] [:] Deserialized: Message{type=Message, needs_reply=true, corr_id=12345, sender=test, dest=bob, payload_size=5}
+[2026-04-01 21:47:24.279] [debug] [:] Routing message: Message{type=Message, needs_reply=true, corr_id=12345, sender=test, dest=bob, payload_size=5}
+[2026-04-01 21:47:24.279] [debug] [:] Routing message to: bob
+[2026-04-01 21:47:24.279] [debug] [:] Destination bob online, sending immediately
+[2026-04-01 21:47:24.279] [debug] [:] Message sent to client bob: Message{type=Message, ne

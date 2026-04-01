@@ -6,6 +6,7 @@
 #include <vector>
 #include <zmq.hpp>
 #include <boost/asio.hpp>
+#include <boost/asio/posix/stream_descriptor.hpp>
 
 #include "router.hpp"
 #include "storage.hpp"
@@ -19,6 +20,16 @@ struct Config {
     std::string LogLevel = "info";
 };
 
+/**
+ * Класс Server с интеграцией ZeroMQ и Boost.Asio через файловые дескрипторы
+ * 
+ * Как это работает:
+ * 1. ZeroMQ предоставляет файловый дескриптор через опцию ZMQ_FD
+ * 2. Дескриптор оборачивается в boost::asio::posix::stream_descriptor
+ * 3. Asio асинхронно ждёт события на этом дескрипторе
+ * 4. При срабатывании проверяем реальные события через ZMQ_EVENTS
+ * 5. Читаем сообщения и передаём в Router
+ */
 class Server {
 public:
     explicit Server(const Config& config);
@@ -29,20 +40,24 @@ public:
 
 private:
     void SetupZmqSocket();
-    void ZmqPollThread();
+    void SetupAsioIntegration();
+    void OnZmqEvent(const boost::system::error_code& ec);
+    void HandleZmqMessage();
     void AsioThread();
-    
+
+private:
     Config config_;
     std::atomic<bool> running_{true};
     
     // ZeroMQ
     zmq::context_t zmq_context_;
     zmq::socket_t router_socket_;
-    std::thread zmq_thread_;
     
-    // Boost.Asio (для будущих расширений)
+    // Boost.Asio
     boost::asio::io_context io_context_;
+    std::unique_ptr<boost::asio::io_context::work> work_guard_;
     std::vector<std::thread> threads_;
+    std::unique_ptr<boost::asio::posix::stream_descriptor> zmq_fd_;
     
     // Бизнес-логика
     std::unique_ptr<Router> router_;
