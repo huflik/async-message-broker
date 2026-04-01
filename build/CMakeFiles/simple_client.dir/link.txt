@@ -1,0 +1,1 @@
+/usr/bin/g++ -g CMakeFiles/simple_client.dir/examples/simple_client.cpp.o -o simple_client  /usr/lib/x86_64-linux-gnu/libzmq.so 
