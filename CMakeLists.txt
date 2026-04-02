@@ -96,6 +96,10 @@ if(BUILD_EXAMPLES)
     add_executable(simple_client examples/simple_client.cpp)
     target_link_libraries(simple_client ${ZMQ_LIB})
     target_include_directories(simple_client PRIVATE ${ZMQ_INCLUDE} ${CPPZMQ_INCLUDE})
+
+    add_executable(reconnect_client examples/reconnect_client.cpp)
+    target_link_libraries(reconnect_client ${ZMQ_LIB})
+    target_include_directories(reconnect_client PRIVATE ${ZMQ_INCLUDE} ${CPPZMQ_INCLUDE})
     
     add_executable(alice_client examples/cpp_client/client.cpp)
     target_link_libraries(alice_client ${ZMQ_LIB})

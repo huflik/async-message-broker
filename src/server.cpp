@@ -29,13 +29,11 @@ void Server::SetupZmqSocket() {
     router_socket_.bind(endpoint);
     spdlog::info("ZeroMQ ROUTER socket bound to {}", endpoint);
     
-    // Неблокирующий режим
     router_socket_.set(zmq::sockopt::rcvtimeo, 0);
     router_socket_.set(zmq::sockopt::sndtimeo, 0);
 }
 
 void Server::SetupAsioIntegration() {
-    // ========== 1. Получение файлового дескриптора ==========
     int fd = router_socket_.get(zmq::sockopt::fd);
     
     if (fd <= 0) {
@@ -44,7 +42,6 @@ void Server::SetupAsioIntegration() {
     
     spdlog::debug("ZeroMQ file descriptor: {}", fd);
     
-    // ========== 2. Установка неблокирующего режима ==========
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) {
         throw std::runtime_error("Failed to get file descriptor flags");
@@ -53,13 +50,10 @@ void Server::SetupAsioIntegration() {
         throw std::runtime_error("Failed to set non-blocking mode");
     }
     
-    // ========== 3. Создание work_guard ==========
     work_guard_ = std::make_unique<boost::asio::io_context::work>(io_context_);
     
-    // ========== 4. Обёртка дескриптора в Asio ==========
     zmq_fd_ = std::make_unique<boost::asio::posix::stream_descriptor>(io_context_, fd);
     
-    // ========== 5. Запуск асинхронного ожидания ==========
     zmq_fd_->async_wait(
         boost::asio::posix::stream_descriptor::wait_read,
         [this](const boost::system::error_code& ec) {
@@ -75,7 +69,6 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
     
     if (ec) {
         spdlog::error("ZeroMQ FD error: {}", ec.message());
-        // Перерегистрируем ожидание
         zmq_fd_->async_wait(
             boost::asio::posix::stream_descriptor::wait_read,
             [this](const boost::system::error_code& ec) {
@@ -85,29 +78,24 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
         return;
     }
     
-    // ========== 1. Проверка реальных событий ==========
     int events = router_socket_.get(zmq::sockopt::events);
     
-    // ========== 2. Обработка входящих сообщений ==========
     if (events & ZMQ_POLLIN) {
         spdlog::debug("ZMQ_POLLIN event received");
         
-        // Читаем все доступные сообщения
         while (running_) {
             zmq::message_t identity;
             auto result = router_socket_.recv(identity, zmq::recv_flags::dontwait);
             if (!result) {
-                break;  // нет больше сообщений
+                break;
             }
             
-            // Выводим identity для отладки
             std::string identity_str(
                 reinterpret_cast<const char*>(identity.data()),
                 identity.size()
             );
             spdlog::debug("Received identity: {}", identity_str);
             
-            // Второй фрейм — данные (нет разделителя от DEALER!)
             zmq::message_t data;
             result = router_socket_.recv(data, zmq::recv_flags::dontwait);
             if (!result) {
@@ -117,7 +105,6 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
             
             spdlog::debug("Received data, size: {}", data.size());
             
-            // Обработка сообщения
             try {
                 std::vector<uint8_t> msg_data(
                     static_cast<uint8_t*>(data.data()),
@@ -135,12 +122,10 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
         }
     }
     
-    // ========== 3. Обработка исходящих сообщений (опционально) ==========
     if (events & ZMQ_POLLOUT) {
         spdlog::trace("ZMQ_POLLOUT event (socket ready for write)");
     }
     
-    // ========== 4. Перерегистрация ожидания ==========
     zmq_fd_->async_wait(
         boost::asio::posix::stream_descriptor::wait_read,
         [this](const boost::system::error_code& ec) {
@@ -149,11 +134,17 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
     );
 }
 
-void Server::HandleZmqMessage() {
-    // Этот метод больше не нужен, всё обрабатывается в OnZmqEvent
-    // Оставляем для совместимости, но не используем
+void Server::SetupCleanupTimer() {
+    cleanup_timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
+    cleanup_timer_->expires_after(std::chrono::seconds(15));  // Уменьшил до 15 секунд
+    
+    cleanup_timer_->async_wait([this](const boost::system::error_code& ec) {
+        if (!ec && running_) {
+            router_->CleanupInactiveSessions();
+            SetupCleanupTimer();
+        }
+    });
 }
-
 void Server::AsioThread() {
     spdlog::debug("Asio thread started");
     
@@ -172,14 +163,14 @@ void Server::AsioThread() {
 void Server::Run() {
     spdlog::info("Starting server...");
     
-    // Запуск пула Asio потоков
+    SetupCleanupTimer();
+    
     for (int i = 0; i < config_.Threads; ++i) {
         threads_.emplace_back(&Server::AsioThread, this);
     }
     
     spdlog::info("Server started with {} threads", config_.Threads);
     
-    // Главный поток ждёт сигнала остановки
     while (running_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }

@@ -7,6 +7,7 @@ namespace broker {
 Router::Router(Storage& storage, zmq::socket_t& router_socket)
     : storage_(storage)
     , router_socket_(router_socket)
+    , offline_manager_(storage)
 {
     spdlog::info("Router initialized");
 }
@@ -58,6 +59,7 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
     
     auto session = std::make_shared<ZmqSession>(std::move(identity_copy), router_socket_);
     session->SetName(client_name);
+    session->UpdateLastActivity();
     
     if (RegisterClient(client_name, session)) {
         spdlog::info("Client {} registered successfully", client_name);
@@ -72,22 +74,31 @@ void Router::HandleMessage(const Message& msg) {
     
     spdlog::debug("Routing message to: {}", destination);
     
+    uint64_t message_id = storage_.SaveMessage(msg);
+    spdlog::debug("Message saved to database with id: {}", message_id);
+    
     auto session = FindSession(destination);
     
     if (session && session->IsOnline()) {
         spdlog::debug("Destination {} online, sending immediately", destination);
-        session->SendMessage(msg);
+        if (session->SendMessage(msg)) {
+            storage_.MarkDelivered(message_id);
+            spdlog::debug("Message {} delivered and marked as delivered", message_id);
+        } else {
+            spdlog::info("Failed to send message to {}, will be delivered later", destination);
+            // Сообщение уже сохранено в БД со статусом pending
+        }
     } else {
-        spdlog::info("Destination {} offline, storing message", destination);
-        // TODO: в Фазе 3 сохраняем в Storage
-        // storage_.SaveMessage(msg);
+        spdlog::info("Destination {} offline, message {} stored in database", destination, message_id);
     }
 }
 
 void Router::HandleReply(const Message& msg) {
     spdlog::debug("Handling reply with correlation_id: {}", msg.GetCorrelationId());
     
-    // Находим сессию получателя (отправителя исходного запроса)
+    uint64_t message_id = storage_.SaveMessage(msg);
+    spdlog::debug("Reply saved to database with id: {}", message_id);
+    
     const std::string& destination = msg.GetDestination();
     spdlog::debug("Reply destination: {}", destination);
     
@@ -95,17 +106,21 @@ void Router::HandleReply(const Message& msg) {
     
     if (session && session->IsOnline()) {
         spdlog::debug("Destination {} online, sending reply immediately", destination);
-        session->SendMessage(msg);
+        if (session->SendMessage(msg)) {
+            storage_.MarkDelivered(message_id);
+            spdlog::debug("Reply {} delivered and marked as delivered", message_id);
+        } else {
+            spdlog::info("Failed to send reply to {}, will be delivered later", destination);
+            // Сообщение уже сохранено в БД со статусом pending
+        }
     } else {
-        spdlog::info("Destination {} offline, storing reply", destination);
-        // TODO: в Фазе 3 сохраняем в Storage
-        // storage_.SaveMessage(msg);
+        spdlog::info("Destination {} offline, reply {} stored in database for later delivery", 
+                     destination, message_id);
     }
 }
 
 void Router::HandleAck(const Message& msg) {
     spdlog::debug("Handling ACK for correlation_id: {}", msg.GetCorrelationId());
-    // TODO: в Фазе 3 обновляем статус сообщения в БД
 }
 
 bool Router::RegisterClient(const std::string& name, std::shared_ptr<ZmqSession> session) {
@@ -192,7 +207,25 @@ void Router::DeliverOfflineMessages(const std::string& name) {
         return;
     }
     
-    spdlog::info("Delivering offline messages to: {}", name);
+    auto pending_messages = storage_.LoadPending(name);
+    
+    if (pending_messages.empty()) {
+        spdlog::debug("No pending messages for client: {}", name);
+        return;
+    }
+    
+    spdlog::info("Delivering {} offline messages to: {}", pending_messages.size(), name);
+    
+    for (const auto& pending : pending_messages) {
+        if (session->SendMessage(pending.msg)) {
+            storage_.MarkDelivered(pending.id);
+            spdlog::debug("Delivered offline message id={} to {}", pending.id, name);
+        } else {
+            spdlog::warn("Failed to deliver offline message id={} to {}", pending.id, name);
+            break;
+        }
+    }
+    
     session->FlushQueue();
 }
 
@@ -201,7 +234,47 @@ void Router::PrintActiveClients() {
     spdlog::info("=== Active clients ({}) ===", active_clients_.size());
     for (const auto& [name, session] : active_clients_) {
         const auto& identity = session->GetIdentity();
-        spdlog::info("  - {} (identity size: {})", name, identity.size());
+        if (identity.size() > 0) {
+            spdlog::info("  - {} (identity size: {})", name, identity.size());
+        } else {
+            spdlog::info("  - {} (identity: disconnected)", name);
+        }
+    }
+}
+
+void Router::CleanupInactiveSessions() {
+    std::lock_guard<std::mutex> lock(registry_mutex_);
+    
+    std::vector<std::string> to_remove;
+    const int TIMEOUT_SECONDS = 30;
+    
+    for (const auto& [name, session] : active_clients_) {
+        // Проверяем по таймауту, даже если is_online_ == true
+        if (session->IsTimedOut(TIMEOUT_SECONDS)) {
+            spdlog::debug("Session {} timed out (no activity for {} seconds)", name, TIMEOUT_SECONDS);
+            to_remove.push_back(name);
+        } else if (!session->IsOnline()) {
+            to_remove.push_back(name);
+            spdlog::debug("Marked {} for cleanup (offline)", name);
+        }
+    }
+    
+    for (const auto& name : to_remove) {
+        auto it = active_clients_.find(name);
+        if (it != active_clients_.end()) {
+            const auto& identity = it->second->GetIdentity();
+            std::string identity_str(
+                reinterpret_cast<const char*>(identity.data()),
+                identity.size()
+            );
+            identity_to_name_.erase(identity_str);
+            active_clients_.erase(it);
+            spdlog::debug("Cleaned up inactive session for: {}", name);
+        }
+    }
+    
+    if (!to_remove.empty()) {
+        spdlog::info("Cleaned up {} inactive sessions", to_remove.size());
     }
 }
 

@@ -4,6 +4,7 @@
 #include <string>
 #include <queue>
 #include <mutex>
+#include <chrono>
 #include <zmq.hpp>
 
 #include "session.hpp"
@@ -20,7 +21,6 @@ public:
     std::string GetName() const override { return name_; }
     bool IsOnline() const override { return is_online_; }
     
-    // Возвращаем константную ссылку, чтобы избежать копирования
     const zmq::message_t& GetIdentity() const override { return identity_; }
     
     void SetName(const std::string& name) override { name_ = name; }
@@ -29,6 +29,16 @@ public:
     
     void MarkOffline() { is_online_ = false; }
     void MarkOnline() { is_online_ = true; }
+    
+    void UpdateLastActivity() {
+        last_activity_ = std::chrono::steady_clock::now();
+    }
+    
+    bool IsTimedOut(int timeout_seconds) const {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_activity_);
+        return elapsed.count() > timeout_seconds;
+    }
 
 private:
     bool SendZmqMessage(const Message& msg);
@@ -39,6 +49,7 @@ private:
     bool is_online_ = true;
     std::queue<Message> outgoing_queue_;
     std::mutex queue_mutex_;
+    std::chrono::steady_clock::time_point last_activity_;
 };
 
 } // namespace broker

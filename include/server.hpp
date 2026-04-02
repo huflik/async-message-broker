@@ -7,6 +7,7 @@
 #include <zmq.hpp>
 #include <boost/asio.hpp>
 #include <boost/asio/posix/stream_descriptor.hpp>
+#include <boost/asio/steady_timer.hpp>
 
 #include "router.hpp"
 #include "storage.hpp"
@@ -22,13 +23,6 @@ struct Config {
 
 /**
  * Класс Server с интеграцией ZeroMQ и Boost.Asio через файловые дескрипторы
- * 
- * Как это работает:
- * 1. ZeroMQ предоставляет файловый дескриптор через опцию ZMQ_FD
- * 2. Дескриптор оборачивается в boost::asio::posix::stream_descriptor
- * 3. Asio асинхронно ждёт события на этом дескрипторе
- * 4. При срабатывании проверяем реальные события через ZMQ_EVENTS
- * 5. Читаем сообщения и передаём в Router
  */
 class Server {
 public:
@@ -44,6 +38,7 @@ private:
     void OnZmqEvent(const boost::system::error_code& ec);
     void HandleZmqMessage();
     void AsioThread();
+    void SetupCleanupTimer();
 
 private:
     Config config_;
@@ -58,6 +53,7 @@ private:
     std::unique_ptr<boost::asio::io_context::work> work_guard_;
     std::vector<std::thread> threads_;
     std::unique_ptr<boost::asio::posix::stream_descriptor> zmq_fd_;
+    std::unique_ptr<boost::asio::steady_timer> cleanup_timer_;
     
     // Бизнес-логика
     std::unique_ptr<Router> router_;
