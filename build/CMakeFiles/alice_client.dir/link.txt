@@ -1,1 +1,0 @@
-/usr/bin/g++ -g CMakeFiles/alice_client.dir/examples/cpp_client/client.cpp.o -o alice_client  /usr/lib/x86_64-linux-gnu/libzmq.so 

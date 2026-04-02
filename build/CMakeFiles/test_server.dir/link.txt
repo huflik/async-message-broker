@@ -1,1 +1,0 @@
-/usr/bin/g++ -g CMakeFiles/test_server.dir/src/test_server.cpp.o -o test_server  /usr/lib/x86_64-linux-gnu/libzmq.so _deps/spdlog-build/libspdlogd.a 
