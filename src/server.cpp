@@ -29,6 +29,24 @@ void Server::SetupZmqSocket() {
     router_socket_.bind(endpoint);
     spdlog::info("ZeroMQ ROUTER socket bound to {}", endpoint);
     
+    // ========== ZMQ_ROUTER_HANDOVER ==========
+    // Позволяет новому клиенту с тем же identity перехватить соединение
+    // Это решает проблему с переподключением после корректного закрытия
+    router_socket_.set(zmq::sockopt::router_handover, 1);
+    spdlog::debug("ZMQ_ROUTER_HANDOVER enabled - new connections with same identity will replace old ones");
+    
+    // ========== TCP keepalive для быстрого обнаружения разрыва соединения ==========
+    // idle=5s   - начинаем проверку через 5 секунд бездействия
+    // intvl=2s  - проверяем каждые 2 секунды
+    // cnt=2     - 2 неудачные попытки считаем разрывом
+    router_socket_.set(zmq::sockopt::tcp_keepalive, 1);
+    router_socket_.set(zmq::sockopt::tcp_keepalive_idle, 5);   // 5 секунд бездействия
+    router_socket_.set(zmq::sockopt::tcp_keepalive_intvl, 2);   // проверка каждые 2 секунды
+    router_socket_.set(zmq::sockopt::tcp_keepalive_cnt, 2);     // 2 неудачные попытки
+    
+    spdlog::debug("TCP keepalive configured: idle=5s, interval=2s, count=2");
+    
+    // Неблокирующий режим
     router_socket_.set(zmq::sockopt::rcvtimeo, 0);
     router_socket_.set(zmq::sockopt::sndtimeo, 0);
 }
@@ -136,7 +154,8 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
 
 void Server::SetupCleanupTimer() {
     cleanup_timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
-    cleanup_timer_->expires_after(std::chrono::seconds(15));  // Уменьшил до 15 секунд
+    // Уменьшаем интервал очистки до 5 секунд для быстрого обнаружения
+    cleanup_timer_->expires_after(std::chrono::seconds(5));
     
     cleanup_timer_->async_wait([this](const boost::system::error_code& ec) {
         if (!ec && running_) {
@@ -145,6 +164,7 @@ void Server::SetupCleanupTimer() {
         }
     });
 }
+
 void Server::AsioThread() {
     spdlog::debug("Asio thread started");
     

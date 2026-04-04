@@ -21,9 +21,6 @@ struct Config {
     std::string LogLevel = "info";
 };
 
-/**
- * Класс Server с интеграцией ZeroMQ и Boost.Asio через файловые дескрипторы
- */
 class Server {
 public:
     explicit Server(const Config& config);
@@ -35,8 +32,8 @@ public:
 private:
     void SetupZmqSocket();
     void SetupAsioIntegration();
+    void SetupTcpKeepAlive();
     void OnZmqEvent(const boost::system::error_code& ec);
-    void HandleZmqMessage();
     void AsioThread();
     void SetupCleanupTimer();
 
@@ -44,18 +41,15 @@ private:
     Config config_;
     std::atomic<bool> running_{true};
     
-    // ZeroMQ
     zmq::context_t zmq_context_;
     zmq::socket_t router_socket_;
     
-    // Boost.Asio
     boost::asio::io_context io_context_;
     std::unique_ptr<boost::asio::io_context::work> work_guard_;
     std::vector<std::thread> threads_;
     std::unique_ptr<boost::asio::posix::stream_descriptor> zmq_fd_;
     std::unique_ptr<boost::asio::steady_timer> cleanup_timer_;
     
-    // Бизнес-логика
     std::unique_ptr<Router> router_;
     std::unique_ptr<Storage> storage_;
 };

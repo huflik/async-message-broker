@@ -93,6 +93,10 @@ target_link_libraries(test_server
 option(BUILD_EXAMPLES "Build example clients" ON)
 
 if(BUILD_EXAMPLES)
+    add_executable(test_client_full examples/test_client_full.cpp)
+    target_link_libraries(test_client_full ${ZMQ_LIB})
+    target_include_directories(test_client_full PRIVATE ${ZMQ_INCLUDE} ${CPPZMQ_INCLUDE})
+
     add_executable(simple_client examples/simple_client.cpp)
     target_link_libraries(simple_client ${ZMQ_LIB})
     target_include_directories(simple_client PRIVATE ${ZMQ_INCLUDE} ${CPPZMQ_INCLUDE})

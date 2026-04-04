@@ -49,6 +49,8 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
         auto it = active_clients_.find(client_name);
         if (it != active_clients_.end()) {
             spdlog::warn("Client {} already registered, replacing old session", client_name);
+            // Сохраняем очередь старой сессии в БД перед удалением
+            it->second->PersistQueueToDatabase();
             it->second->MarkOffline();
             active_clients_.erase(it);
         }
@@ -57,12 +59,14 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
     zmq::message_t identity_copy(identity.size());
     std::memcpy(identity_copy.data(), identity.data(), identity.size());
     
-    auto session = std::make_shared<ZmqSession>(std::move(identity_copy), router_socket_);
+    // Передаём storage в сессию для возможности сохранять очередь
+    auto session = std::make_shared<ZmqSession>(std::move(identity_copy), router_socket_, &storage_);
     session->SetName(client_name);
     session->UpdateLastActivity();
     
     if (RegisterClient(client_name, session)) {
         spdlog::info("Client {} registered successfully", client_name);
+        // Загружаем все отложенные сообщения из БД
         DeliverOfflineMessages(client_name);
     }
     
@@ -74,12 +78,30 @@ void Router::HandleMessage(const Message& msg) {
     
     spdlog::debug("Routing message to: {}", destination);
     
+    // Сначала сохраняем в БД
     uint64_t message_id = storage_.SaveMessage(msg);
     spdlog::debug("Message saved to database with id: {}", message_id);
     
     auto session = FindSession(destination);
     
-    if (session && session->IsOnline()) {
+    // Проверяем, активен ли клиент
+    bool can_deliver = false;
+    if (session) {
+        // Проверяем таймаут активности (5 секунд)
+        if (session->IsTimedOut(5)) {
+            spdlog::info("Client {} inactive for 5 seconds, marking offline", destination);
+            session->MarkOffline();
+        }
+        // Проверяем реальное соединение
+        else if (session->CheckConnection()) {
+            can_deliver = true;
+        } else {
+            spdlog::info("Client {} connection check failed, marking offline", destination);
+            session->MarkOffline();
+        }
+    }
+    
+    if (can_deliver && session && session->IsOnline()) {
         spdlog::debug("Destination {} online, sending immediately", destination);
         if (session->SendMessage(msg)) {
             storage_.MarkDelivered(message_id);
@@ -96,6 +118,7 @@ void Router::HandleMessage(const Message& msg) {
 void Router::HandleReply(const Message& msg) {
     spdlog::debug("Handling reply with correlation_id: {}", msg.GetCorrelationId());
     
+    // Сначала сохраняем в БД
     uint64_t message_id = storage_.SaveMessage(msg);
     spdlog::debug("Reply saved to database with id: {}", message_id);
     
@@ -104,7 +127,24 @@ void Router::HandleReply(const Message& msg) {
     
     auto session = FindSession(destination);
     
-    if (session && session->IsOnline()) {
+    // Проверяем, активен ли клиент
+    bool can_deliver = false;
+    if (session) {
+        // Проверяем таймаут активности (5 секунд)
+        if (session->IsTimedOut(5)) {
+            spdlog::info("Client {} inactive for 5 seconds, marking offline", destination);
+            session->MarkOffline();
+        }
+        // Проверяем реальное соединение
+        else if (session->CheckConnection()) {
+            can_deliver = true;
+        } else {
+            spdlog::info("Client {} connection check failed, marking offline", destination);
+            session->MarkOffline();
+        }
+    }
+    
+    if (can_deliver && session && session->IsOnline()) {
         spdlog::debug("Destination {} online, sending reply immediately", destination);
         if (session->SendMessage(msg)) {
             storage_.MarkDelivered(message_id);
@@ -121,6 +161,7 @@ void Router::HandleReply(const Message& msg) {
 
 void Router::HandleAck(const Message& msg) {
     spdlog::debug("Handling ACK for correlation_id: {}", msg.GetCorrelationId());
+    // TODO: обновляем статус сообщения в БД при необходимости
 }
 
 bool Router::RegisterClient(const std::string& name, std::shared_ptr<ZmqSession> session) {
@@ -207,6 +248,7 @@ void Router::DeliverOfflineMessages(const std::string& name) {
         return;
     }
     
+    // Загружаем отложенные сообщения из БД с ID
     auto pending_messages = storage_.LoadPending(name);
     
     if (pending_messages.empty()) {
@@ -245,23 +287,30 @@ void Router::PrintActiveClients() {
 void Router::CleanupInactiveSessions() {
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
+    // Таймаут 5 секунд для быстрого обнаружения отключившихся клиентов
+    const int TIMEOUT_SECONDS = 5;
+    
     std::vector<std::string> to_remove;
-    const int TIMEOUT_SECONDS = 30;
     
     for (const auto& [name, session] : active_clients_) {
-        // Проверяем по таймауту, даже если is_online_ == true
+        // Проверяем по таймауту активности
         if (session->IsTimedOut(TIMEOUT_SECONDS)) {
             spdlog::debug("Session {} timed out (no activity for {} seconds)", name, TIMEOUT_SECONDS);
             to_remove.push_back(name);
-        } else if (!session->IsOnline()) {
-            to_remove.push_back(name);
+        } 
+        // Также проверяем флаг offline
+        else if (!session->IsOnline()) {
             spdlog::debug("Marked {} for cleanup (offline)", name);
+            to_remove.push_back(name);
         }
     }
     
     for (const auto& name : to_remove) {
         auto it = active_clients_.find(name);
         if (it != active_clients_.end()) {
+            // Сохраняем очередь сообщений в БД перед удалением
+            it->second->PersistQueueToDatabase();
+            
             const auto& identity = it->second->GetIdentity();
             std::string identity_str(
                 reinterpret_cast<const char*>(identity.data()),
