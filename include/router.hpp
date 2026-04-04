@@ -25,6 +25,13 @@ public:
     std::shared_ptr<ZmqSession> FindSession(const std::string& name);
     void HandleDisconnect(const zmq::message_t& identity);
     void DeliverOfflineMessages(const std::string& name);
+    
+    /**
+     * Доставляет все ожидающие ответы (replies) для клиента
+     * Вызывается при регистрации клиента
+     */
+    void DeliverPendingReplies(const std::string& name);
+    
     void PrintActiveClients();
     
     /**

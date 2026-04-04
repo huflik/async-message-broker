@@ -46,9 +46,7 @@ set(SOURCES
     src/router.cpp
     src/zmq_session.cpp
     src/storage.cpp
-    src/dispatcher.cpp
     src/offline_queue.cpp
-    src/correlation_engine.cpp
     src/metrics.cpp
 )
 

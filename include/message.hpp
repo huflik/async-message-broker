@@ -31,7 +31,8 @@ enum class MessageType : uint8_t {
  */
 enum MessageFlag : uint8_t {
     FlagNone = 0,               // 0x00 - флаги не установлены
-    FlagNeedsReply = 1 << 0     // 0x01 - отправитель ожидает ответ
+    FlagNeedsReply = 1 << 0,    // 0x01 - отправитель ожидает ответ
+    FlagNeedsAck = 1 << 1       // 0x02 - требуется подтверждение доставки
 };
 
 /**
@@ -45,7 +46,7 @@ enum MessageFlag : uint8_t {
  * Формат сериализации (15 байт заголовка + переменные поля):
  * [0] version      - 1 байт, версия протокола (1)
  * [1] type         - 1 байт, тип сообщения (1-4)
- * [2] flags        - 1 байт, битовые флаги (только NeedsReply)
+ * [2] flags        - 1 байт, битовые флаги (NeedsReply, NeedsAck)
  * [3-10] corr_id   - 8 байт, correlation_id в сетевом порядке (big-endian)
  * [11] sender_len  - 1 байт, длина имени отправителя (0-255)
  * [12] dest_len    - 1 байт, длина имени получателя (0-255)
@@ -63,7 +64,7 @@ public:
      * Конструктор с параметрами
      * 
      * @param type тип сообщения (Register, Message, Reply, Ack)
-     * @param flags битовые флаги (NeedsReply)
+     * @param flags битовые флаги (NeedsReply, NeedsAck)
      * @param correlation_id идентификатор для связывания запроса и ответа
      * @param sender логическое имя отправителя
      * @param destination логическое имя получателя
@@ -128,6 +129,21 @@ public:
     void SetNeedsReply(bool value) {
         if (value) SetFlag(FlagNeedsReply);
         else ClearFlag(FlagNeedsReply);
+    }
+    
+    /**
+     * Проверяет, требуется ли подтверждение доставки
+     */
+    bool NeedsAck() const {
+        return HasFlag(FlagNeedsAck);
+    }
+    
+    /**
+     * Устанавливает или снимает флаг NEEDS_ACK
+     */
+    void SetNeedsAck(bool value) {
+        if (value) SetFlag(FlagNeedsAck);
+        else ClearFlag(FlagNeedsAck);
     }
     
     // ==================== Сериализация ====================
