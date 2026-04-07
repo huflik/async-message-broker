@@ -67,22 +67,6 @@ target_link_libraries(broker
     Threads::Threads
 )
 
-# ============================================================================
-# Тестовый сервер для отладки
-# ============================================================================
-
-add_executable(test_server src/test_server.cpp)
-
-target_include_directories(test_server PRIVATE
-    ${ZMQ_INCLUDE}
-    ${CPPZMQ_INCLUDE}
-)
-
-target_link_libraries(test_server
-    ${ZMQ_LIB}
-    spdlog::spdlog
-    Threads::Threads
-)
 
 # ============================================================================
 # Примеры клиентов

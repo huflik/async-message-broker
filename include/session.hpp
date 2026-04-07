@@ -15,12 +15,12 @@ public:
     virtual std::string GetName() const = 0;
     virtual bool IsOnline() const = 0;
     
-    // Возвращаем константную ссылку, чтобы избежать копирования
     virtual const zmq::message_t& GetIdentity() const = 0;
     
     virtual void SetName(const std::string& name) = 0;
     virtual void EnqueueMessage(const Message& msg) = 0;
     virtual void FlushQueue() = 0;
+    virtual void UpdateLastReceive() = 0;
 };
 
 } // namespace broker

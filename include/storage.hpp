@@ -44,14 +44,26 @@ public:
     
     /**
      * Загружает все отложенные сообщения для клиента (где клиент - получатель)
+     * Загружает сообщения со статусом PENDING или SENT
      */
     std::vector<PendingMessage> LoadPending(const std::string& client_name);
     
     /**
+     * Загружает только сообщения со статусом PENDING (не SENT)
+     */
+    std::vector<PendingMessage> LoadPendingOnly(const std::string& client_name);
+    
+    /**
      * Загружает все ответы (Reply), предназначенные для указанного отправителя
      * Используется для доставки ответов, когда original_sender подключается
+     * Загружает сообщения со статусом PENDING или SENT
      */
     std::vector<PendingMessage> LoadPendingRepliesForSender(const std::string& sender_name);
+    
+    /**
+     * Загружает только ответы со статусом PENDING для отправителя
+     */
+    std::vector<PendingMessage> LoadPendingRepliesForSenderOnly(const std::string& sender_name);
     
     /**
      * Помечает сообщение как доставленное (получен ACK)
@@ -79,6 +91,12 @@ public:
      * @return имя отправителя или пустую строку, если не найден
      */
     std::string FindOriginalSenderByCorrelation(uint64_t correlation_id);
+    
+    /**
+     * Находит message_id по correlation_id
+     * @return message_id или 0 если не найден
+     */
+    uint64_t FindMessageIdByCorrelation(uint64_t correlation_id);
     
     /**
      * @deprecated Оставлен для совместимости, используйте версию с original_sender

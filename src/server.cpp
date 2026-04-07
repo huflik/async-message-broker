@@ -14,7 +14,7 @@ Server::Server(const Config& config)
     spdlog::info("Initializing server...");
     
     storage_ = std::make_unique<Storage>(config_.DbPath);
-    router_ = std::make_unique<Router>(*storage_, router_socket_);
+    router_ = std::make_unique<Router>(*storage_, router_socket_, *this);
     
     SetupZmqSocket();
     SetupAsioIntegration();
@@ -29,24 +29,22 @@ void Server::SetupZmqSocket() {
     router_socket_.bind(endpoint);
     spdlog::info("ZeroMQ ROUTER socket bound to {}", endpoint);
     
-    // ========== ZMQ_ROUTER_HANDOVER ==========
-    // Позволяет новому клиенту с тем же identity перехватить соединение
-    // Это решает проблему с переподключением после корректного закрытия
     router_socket_.set(zmq::sockopt::router_handover, 1);
-    spdlog::debug("ZMQ_ROUTER_HANDOVER enabled - new connections with same identity will replace old ones");
     
-    // ========== TCP keepalive для быстрого обнаружения разрыва соединения ==========
-    // idle=5s   - начинаем проверку через 5 секунд бездействия
-    // intvl=2s  - проверяем каждые 2 секунды
-    // cnt=2     - 2 неудачные попытки считаем разрывом
+    // TCP keepalive для обнаружения разрыва соединения
     router_socket_.set(zmq::sockopt::tcp_keepalive, 1);
-    router_socket_.set(zmq::sockopt::tcp_keepalive_idle, 5);   // 5 секунд бездействия
-    router_socket_.set(zmq::sockopt::tcp_keepalive_intvl, 2);   // проверка каждые 2 секунды
-    router_socket_.set(zmq::sockopt::tcp_keepalive_cnt, 2);     // 2 неудачные попытки
+    router_socket_.set(zmq::sockopt::tcp_keepalive_idle, 5);
+    router_socket_.set(zmq::sockopt::tcp_keepalive_intvl, 2);
+    router_socket_.set(zmq::sockopt::tcp_keepalive_cnt, 2);
     
+    // ZeroMQ heartbeat для надёжного обнаружения разрыва
+    router_socket_.set(zmq::sockopt::heartbeat_ivl, 3000);      // отправлять heartbeat каждые 3 сек
+    router_socket_.set(zmq::sockopt::heartbeat_timeout, 10000); // ждать ответ 10 сек
+    router_socket_.set(zmq::sockopt::heartbeat_ttl, 3000);      // TTL 3 сек
+    
+    spdlog::debug("ZMQ heartbeat configured: ivl=3s, timeout=10s, ttl=3s");
     spdlog::debug("TCP keepalive configured: idle=5s, interval=2s, count=2");
     
-    // Неблокирующий режим
     router_socket_.set(zmq::sockopt::rcvtimeo, 0);
     router_socket_.set(zmq::sockopt::sndtimeo, 0);
 }
@@ -96,6 +94,8 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
         return;
     }
     
+    ProcessPendingSends();
+    
     int events = router_socket_.get(zmq::sockopt::events);
     
     if (events & ZMQ_POLLIN) {
@@ -108,20 +108,12 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
                 break;
             }
             
-            std::string identity_str(
-                reinterpret_cast<const char*>(identity.data()),
-                identity.size()
-            );
-            spdlog::debug("Received identity: {}", identity_str);
-            
             zmq::message_t data;
             result = router_socket_.recv(data, zmq::recv_flags::dontwait);
             if (!result) {
                 spdlog::error("Failed to receive data");
                 break;
             }
-            
-            spdlog::debug("Received data, size: {}", data.size());
             
             try {
                 std::vector<uint8_t> msg_data(
@@ -152,15 +144,130 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
     );
 }
 
+void Server::ProcessPendingSends() {
+    std::queue<PendingSend> sends;
+    {
+        std::lock_guard<std::mutex> lock(pending_sends_mutex_);
+        if (pending_sends_.empty()) {
+            sending_in_progress_ = false;
+            return;
+        }
+        sends.swap(pending_sends_);
+        sending_in_progress_ = true;
+    }
+    
+    while (!sends.empty()) {
+        auto& send = sends.front();
+        try {
+            auto result = router_socket_.send(send.identity, zmq::send_flags::sndmore);
+            if (!result) {
+                spdlog::warn("Failed to send identity frame");
+                if (send.callback) send.callback(false);
+                sends.pop();
+                continue;
+            }
+            
+            zmq::message_t delimiter;
+            result = router_socket_.send(delimiter, zmq::send_flags::sndmore);
+            if (!result) {
+                spdlog::warn("Failed to send delimiter frame");
+                if (send.callback) send.callback(false);
+                sends.pop();
+                continue;
+            }
+            
+            result = router_socket_.send(send.data, zmq::send_flags::dontwait);
+            if (!result) {
+                spdlog::warn("Failed to send data frame");
+                if (send.callback) send.callback(false);
+            } else {
+                spdlog::trace("Message sent successfully");
+                if (send.callback) send.callback(true);
+            }
+        } catch (const zmq::error_t& e) {
+            spdlog::error("ZMQ error while sending: {}", e.what());
+            if (send.callback) send.callback(false);
+        } catch (const std::exception& e) {
+            spdlog::error("Error sending message: {}", e.what());
+            if (send.callback) send.callback(false);
+        }
+        sends.pop();
+    }
+    
+    {
+        std::lock_guard<std::mutex> lock(pending_sends_mutex_);
+        sending_in_progress_ = false;
+        if (!pending_sends_.empty()) {
+            ScheduleSendProcessing();
+        }
+    }
+}
+
+void Server::ScheduleSendProcessing() {
+    boost::asio::post(io_context_, [this]() {
+        if (running_ && !sending_in_progress_) {
+            ProcessPendingSends();
+        }
+    });
+}
+
+void Server::SendMessage(zmq::message_t identity, zmq::message_t data, 
+                         std::function<void(bool)> callback) {
+    try {
+        auto result = router_socket_.send(identity, zmq::send_flags::dontwait | zmq::send_flags::sndmore);
+        if (!result) {
+            spdlog::warn("Failed to send identity frame");
+            if (callback) callback(false);
+            return;
+        }
+        
+        zmq::message_t delimiter;
+        result = router_socket_.send(delimiter, zmq::send_flags::dontwait | zmq::send_flags::sndmore);
+        if (!result) {
+            spdlog::warn("Failed to send delimiter frame");
+            if (callback) callback(false);
+            return;
+        }
+        
+        result = router_socket_.send(data, zmq::send_flags::dontwait);
+        if (!result) {
+            spdlog::warn("Failed to send data frame");
+            if (callback) callback(false);
+            return;
+        }
+        
+        spdlog::trace("Message sent successfully");
+        if (callback) callback(true);
+        
+    } catch (const zmq::error_t& e) {
+        spdlog::error("ZMQ error while sending: {}", e.what());
+        if (callback) callback(false);
+    } catch (const std::exception& e) {
+        spdlog::error("Error sending message: {}", e.what());
+        if (callback) callback(false);
+    }
+}
+
 void Server::SetupCleanupTimer() {
     cleanup_timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
-    // Уменьшаем интервал очистки до 5 секунд для быстрого обнаружения
     cleanup_timer_->expires_after(std::chrono::seconds(5));
     
     cleanup_timer_->async_wait([this](const boost::system::error_code& ec) {
         if (!ec && running_) {
             router_->CleanupInactiveSessions();
             SetupCleanupTimer();
+        }
+    });
+}
+
+void Server::SetupHeartbeatTimer() {
+    heartbeat_timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
+    heartbeat_timer_->expires_after(std::chrono::seconds(30));
+    
+    heartbeat_timer_->async_wait([this](const boost::system::error_code& ec) {
+        if (!ec && running_) {
+            router_->CheckHeartbeats();
+            SetupHeartbeatTimer();
         }
     });
 }
@@ -184,6 +291,7 @@ void Server::Run() {
     spdlog::info("Starting server...");
     
     SetupCleanupTimer();
+    SetupHeartbeatTimer();
     
     for (int i = 0; i < config_.Threads; ++i) {
         threads_.emplace_back(&Server::AsioThread, this);
@@ -201,6 +309,13 @@ void Server::Stop() {
     
     spdlog::info("Stopping server...");
     running_ = false;
+    
+    {
+        std::lock_guard<std::mutex> lock(pending_sends_mutex_);
+        while (!pending_sends_.empty()) {
+            pending_sends_.pop();
+        }
+    }
     
     io_context_.stop();
     work_guard_.reset();

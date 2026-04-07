@@ -5,13 +5,181 @@
 #include <thread>
 #include <chrono>
 #include <cstring>
-#include <arpa/inet.h>
 #include <getopt.h>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <memory>
 
-// Функция получения текущего времени в виде строки
+// Добавляем недостающие заголовки для сетевого порядка байт
+#include <arpa/inet.h>  // для htons, ntohs
+
+// Подключаем официальный Message класс брокера
+// В реальном проекте путь будет: #include "message.hpp"
+// Для теста копируем необходимые определения
+
+namespace test {
+
+// Минимальная копия необходимых определений из брокера
+// В реальном проекте используйте #include "message.hpp"
+
+enum class MessageType : uint8_t {
+    Register = 1,
+    Message = 2,
+    Reply = 3,
+    Ack = 4
+};
+
+enum MessageFlag : uint8_t {
+    FlagNone = 0,
+    FlagNeedsReply = 1 << 0,
+    FlagNeedsAck = 1 << 1
+};
+
+class Message {
+public:
+    Message() = default;
+    
+    Message(MessageType type, 
+            uint8_t flags,
+            uint64_t correlation_id,
+            const std::string& sender,
+            const std::string& destination,
+            const std::vector<uint8_t>& payload)
+        : type_(type)
+        , flags_(flags)
+        , correlation_id_(correlation_id)
+        , sender_(sender)
+        , destination_(destination)
+        , payload_(payload)
+    {}
+    
+    // Геттеры
+    MessageType GetType() const { return type_; }
+    uint8_t GetFlags() const { return flags_; }
+    uint64_t GetCorrelationId() const { return correlation_id_; }
+    const std::string& GetSender() const { return sender_; }
+    const std::string& GetDestination() const { return destination_; }
+    const std::vector<uint8_t>& GetPayload() const { return payload_; }
+    
+    // Флаги
+    bool HasFlag(uint8_t flag) const { return (flags_ & flag) != 0; }
+    bool NeedsReply() const { return HasFlag(FlagNeedsReply); }
+    bool NeedsAck() const { return HasFlag(FlagNeedsAck); }
+    
+    // Сериализация
+    std::vector<uint8_t> Serialize() const {
+        constexpr uint8_t PROTOCOL_VERSION = 1;
+        constexpr size_t HEADER_SIZE = 15;
+        
+        if (sender_.size() > 255) throw std::runtime_error("Sender too long");
+        if (destination_.size() > 255) throw std::runtime_error("Destination too long");
+        if (payload_.size() > 65535) throw std::runtime_error("Payload too large");
+        
+        std::vector<uint8_t> buffer;
+        buffer.reserve(HEADER_SIZE + sender_.size() + destination_.size() + payload_.size());
+        
+        buffer.push_back(PROTOCOL_VERSION);
+        buffer.push_back(static_cast<uint8_t>(type_));
+        buffer.push_back(flags_);
+        
+        uint64_t net_corr = __builtin_bswap64(correlation_id_);
+        const uint8_t* corr_bytes = reinterpret_cast<const uint8_t*>(&net_corr);
+        buffer.insert(buffer.end(), corr_bytes, corr_bytes + 8);
+        
+        buffer.push_back(static_cast<uint8_t>(sender_.size()));
+        buffer.push_back(static_cast<uint8_t>(destination_.size()));
+        
+        uint16_t net_len = htons(static_cast<uint16_t>(payload_.size()));
+        const uint8_t* len_bytes = reinterpret_cast<const uint8_t*>(&net_len);
+        buffer.insert(buffer.end(), len_bytes, len_bytes + 2);
+        
+        buffer.insert(buffer.end(), sender_.begin(), sender_.end());
+        buffer.insert(buffer.end(), destination_.begin(), destination_.end());
+        buffer.insert(buffer.end(), payload_.begin(), payload_.end());
+        
+        return buffer;
+    }
+    
+    static Message Deserialize(const std::vector<uint8_t>& data) {
+        constexpr uint8_t PROTOCOL_VERSION = 1;
+        constexpr size_t HEADER_SIZE = 15;
+        
+        if (data.size() < HEADER_SIZE) {
+            throw std::runtime_error("Message too short");
+        }
+        
+        size_t pos = 0;
+        uint8_t version = data[pos++];
+        if (version != PROTOCOL_VERSION) {
+            throw std::runtime_error("Unsupported protocol version");
+        }
+        
+        Message msg;
+        msg.type_ = static_cast<MessageType>(data[pos++]);
+        msg.flags_ = data[pos++];
+        
+        uint64_t net_corr;
+        std::memcpy(&net_corr, &data[pos], 8);
+        msg.correlation_id_ = __builtin_bswap64(net_corr);
+        pos += 8;
+        
+        uint8_t sender_len = data[pos++];
+        uint8_t dest_len = data[pos++];
+        
+        uint16_t net_payload_len;
+        std::memcpy(&net_payload_len, &data[pos], 2);
+        uint16_t payload_len = ntohs(net_payload_len);
+        pos += 2;
+        
+        if (data.size() != HEADER_SIZE + sender_len + dest_len + payload_len) {
+            throw std::runtime_error("Message size mismatch");
+        }
+        
+        msg.sender_.assign(reinterpret_cast<const char*>(&data[pos]), sender_len);
+        pos += sender_len;
+        
+        msg.destination_.assign(reinterpret_cast<const char*>(&data[pos]), dest_len);
+        pos += dest_len;
+        
+        msg.payload_.assign(data.begin() + pos, data.begin() + pos + payload_len);
+        
+        return msg;
+    }
+    
+    std::string ToString() const {
+        std::stringstream ss;
+        ss << "Message{type=";
+        switch (type_) {
+            case MessageType::Register: ss << "Register"; break;
+            case MessageType::Message: ss << "Message"; break;
+            case MessageType::Reply: ss << "Reply"; break;
+            case MessageType::Ack: ss << "Ack"; break;
+        }
+        ss << ", flags=" << (int)flags_
+           << ", corr_id=" << correlation_id_
+           << ", sender=" << sender_
+           << ", dest=" << destination_
+           << ", payload_size=" << payload_.size()
+           << "}";
+        return ss.str();
+    }
+    
+private:
+    MessageType type_ = MessageType::Message;
+    uint8_t flags_ = 0;
+    uint64_t correlation_id_ = 0;
+    std::string sender_;
+    std::string destination_;
+    std::vector<uint8_t> payload_;
+};
+
+} // namespace test
+
+using namespace test;
+
+// ==================== Вспомогательные функции ====================
+
 std::string get_current_time() {
     auto now = std::chrono::system_clock::now();
     auto in_time_t = std::chrono::system_clock::to_time_t(now);
@@ -24,168 +192,141 @@ std::string get_current_time() {
     return ss.str();
 }
 
-// Структура сообщения
-struct SimpleMessage {
-    uint8_t version = 1;
-    uint8_t type = 2;
-    uint8_t flags = 0;
-    uint64_t correlation_id = 0;
-    std::string sender;
-    std::string destination;
-    std::string payload;
-    
-    std::vector<uint8_t> serialize() const {
-        std::vector<uint8_t> buffer;
-        buffer.push_back(version);
-        buffer.push_back(type);
-        buffer.push_back(flags);
-        
-        uint64_t net_corr = __builtin_bswap64(correlation_id);
-        const uint8_t* corr_bytes = reinterpret_cast<const uint8_t*>(&net_corr);
-        buffer.insert(buffer.end(), corr_bytes, corr_bytes + 8);
-        
-        buffer.push_back(static_cast<uint8_t>(sender.size()));
-        buffer.push_back(static_cast<uint8_t>(destination.size()));
-        
-        uint16_t net_len = htons(static_cast<uint16_t>(payload.size()));
-        const uint8_t* len_bytes = reinterpret_cast<const uint8_t*>(&net_len);
-        buffer.insert(buffer.end(), len_bytes, len_bytes + 2);
-        
-        buffer.insert(buffer.end(), sender.begin(), sender.end());
-        buffer.insert(buffer.end(), destination.begin(), destination.end());
-        buffer.insert(buffer.end(), payload.begin(), payload.end());
-        
-        return buffer;
+// ==================== Клиентский класс ====================
+
+class TestClient {
+public:
+    TestClient(const std::string& name, const std::string& server_addr = "tcp://localhost:5555")
+        : name_(name)
+        , context_(1)
+        , socket_(context_, zmq::socket_type::dealer)
+    {
+        // Устанавливаем identity для DEALER сокета
+        socket_.set(zmq::sockopt::routing_id, name);
+        socket_.connect(server_addr);
+        std::cout << "[" << get_current_time() << "] [" << name_ << "] Connected to " << server_addr << std::endl;
     }
     
-    void deserialize(const std::vector<uint8_t>& data) {
-        size_t pos = 0;
-        version = data[pos++];
-        type = data[pos++];
-        flags = data[pos++];
-        
-        uint64_t net_corr;
-        std::memcpy(&net_corr, &data[pos], 8);
-        correlation_id = __builtin_bswap64(net_corr);
-        pos += 8;
-        
-        uint8_t sender_len = data[pos++];
-        uint8_t dest_len = data[pos++];
-        
-        uint16_t net_payload_len;
-        std::memcpy(&net_payload_len, &data[pos], 2);
-        uint16_t payload_len = ntohs(net_payload_len);
-        pos += 2;
-        
-        sender.assign(reinterpret_cast<const char*>(&data[pos]), sender_len);
-        pos += sender_len;
-        
-        destination.assign(reinterpret_cast<const char*>(&data[pos]), dest_len);
-        pos += dest_len;
-        
-        payload.assign(reinterpret_cast<const char*>(&data[pos]), payload_len);
+    ~TestClient() {
+        socket_.close();
     }
-};
-
-void register_client(zmq::socket_t& socket, const std::string& name) {
-    SimpleMessage msg;
-    msg.type = 1;  // Register
-    msg.sender = name;
-    socket.send(zmq::buffer(msg.serialize()), zmq::send_flags::none);
-    std::cout << "[" << get_current_time() << "] [" << name << "] Registered" << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-}
-
-void send_message(zmq::socket_t& socket, const std::string& from, const std::string& to, 
-                  const std::string& payload, uint64_t corr_id, bool needs_reply, bool needs_ack = false) {
-    SimpleMessage msg;
-    msg.type = 2;  // Message
-    msg.flags = (needs_reply ? 1 : 0) | (needs_ack ? 2 : 0);  // Бит 0 = NEEDS_REPLY, бит 1 = NEEDS_ACK
-    msg.correlation_id = corr_id;
-    msg.sender = from;
-    msg.destination = to;
-    msg.payload = payload;
-    socket.send(zmq::buffer(msg.serialize()), zmq::send_flags::none);
-    std::cout << "[" << get_current_time() << "] [" << from << "] Sent message to " << to 
-              << ": \"" << payload << "\" (corr_id=" << corr_id 
-              << ", needs_reply=" << needs_reply 
-              << ", needs_ack=" << needs_ack << ")" << std::endl;
-}
-
-void send_reply(zmq::socket_t& socket, const std::string& from, const std::string& to,
-                const std::string& payload, uint64_t corr_id, bool needs_ack = false) {
-    SimpleMessage msg;
-    msg.type = 3;  // Reply
-    msg.flags = needs_ack ? 2 : 0;
-    msg.correlation_id = corr_id;
-    msg.sender = from;
-    msg.destination = to;
-    msg.payload = payload;
-    socket.send(zmq::buffer(msg.serialize()), zmq::send_flags::none);
-    std::cout << "[" << get_current_time() << "] [" << from << "] Sent reply to " << to 
-              << ": \"" << payload << "\" (corr_id=" << corr_id 
-              << ", needs_ack=" << needs_ack << ")" << std::endl;
-}
-
-void send_ack(zmq::socket_t& socket, const std::string& from, uint64_t corr_id) {
-    SimpleMessage msg;
-    msg.type = 4;  // Ack
-    msg.flags = 0;
-    msg.correlation_id = corr_id;
-    msg.sender = from;
-    msg.destination = "";
-    msg.payload = "";
-    socket.send(zmq::buffer(msg.serialize()), zmq::send_flags::none);
-    std::cout << "[" << get_current_time() << "] [" << from << "] Sent ACK for correlation_id=" << corr_id << std::endl;
-}
-
-bool wait_for_message(zmq::socket_t& socket, SimpleMessage& received, int timeout_ms = 5000) {
-    zmq::pollitem_t items[] = {{socket, 0, ZMQ_POLLIN, 0}};
+    
+    void Register() {
+        Message msg(MessageType::Register, 0, 0, name_, "", {});
+        SendMessage(msg);
+        std::cout << "[" << get_current_time() << "] [" << name_ << "] Registered" << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    
+    void SendMessage(const std::string& to, const std::string& payload, 
+                     uint64_t corr_id, bool needs_reply, bool needs_ack = false) {
+        uint8_t flags = 0;
+        if (needs_reply) flags |= FlagNeedsReply;
+        if (needs_ack) flags |= FlagNeedsAck;
+        
+        std::vector<uint8_t> payload_bytes(payload.begin(), payload.end());
+        Message msg(MessageType::Message, flags, corr_id, name_, to, payload_bytes);
+        SendMessage(msg);
+        
+        std::cout << "[" << get_current_time() << "] [" << name_ << "] Sent to " << to 
+                  << ": \"" << payload << "\" (corr_id=" << corr_id 
+                  << ", needs_reply=" << needs_reply 
+                  << ", needs_ack=" << needs_ack << ")" << std::endl;
+    }
+    
+    void SendReply(const std::string& to, const std::string& payload, 
+                   uint64_t corr_id, bool needs_ack = false) {
+        uint8_t flags = needs_ack ? FlagNeedsAck : 0;
+        std::vector<uint8_t> payload_bytes(payload.begin(), payload.end());
+        Message msg(MessageType::Reply, flags, corr_id, name_, to, payload_bytes);
+        SendMessage(msg);
+        
+        std::cout << "[" << get_current_time() << "] [" << name_ << "] Sent reply to " << to 
+                  << ": \"" << payload << "\" (corr_id=" << corr_id 
+                  << ", needs_ack=" << needs_ack << ")" << std::endl;
+    }
+    
+    void SendAck(uint64_t corr_id) {
+        Message msg(MessageType::Ack, 0, corr_id, name_, "", {});
+        SendMessage(msg);
+        std::cout << "[" << get_current_time() << "] [" << name_ << "] Sent ACK for corr_id=" << corr_id << std::endl;
+    }
+    
+    bool Receive(Message& received, int timeout_ms = 5000) {
+    zmq::pollitem_t items[] = {{socket_, 0, ZMQ_POLLIN, 0}};
     int poll_result = zmq::poll(items, 1, std::chrono::milliseconds(timeout_ms));
     
     if (poll_result > 0 && (items[0].revents & ZMQ_POLLIN)) {
+        // Читаем все фреймы
         std::vector<zmq::message_t> frames;
         bool more = true;
         while (more) {
             zmq::message_t frame;
-            auto recv_result = socket.recv(frame, zmq::recv_flags::none);
+            auto recv_result = socket_.recv(frame, zmq::recv_flags::none);
             if (!recv_result) break;
             more = frame.more();
             frames.push_back(std::move(frame));
         }
         
+        // Ищем фрейм с валидным сообщением (первый байт = 1 - версия протокола)
         for (const auto& frame : frames) {
             if (frame.size() > 0) {
                 const uint8_t* data = static_cast<const uint8_t*>(frame.data());
-                std::vector<uint8_t> msg_data(data, data + frame.size());
-                received.deserialize(msg_data);
-                return true;
+                // Проверяем, что это не identity (слишком короткий или не начинается с 1)
+                if (frame.size() >= 3 && data[0] == 1) {
+                    std::vector<uint8_t> msg_data(data, data + frame.size());
+                    received = Message::Deserialize(msg_data);
+                    return true;
+                }
             }
         }
+        
+        // Если не нашли, выводим отладочную информацию
+        std::cout << "[" << get_current_time() << "] [" << name_ 
+                  << "] Received " << frames.size() << " frames, none valid" << std::endl;
+        for (size_t i = 0; i < frames.size(); ++i) {
+            std::cout << "  Frame " << i << ": size=" << frames[i].size();
+            if (frames[i].size() > 0) {
+                const uint8_t* d = static_cast<const uint8_t*>(frames[i].data());
+                std::cout << " first_byte=" << (int)d[0];
+            }
+            std::cout << std::endl;
+        }
+        return false;
     }
     return false;
 }
+    
+    const std::string& GetName() const { return name_; }
+    
+private:
+    void SendMessage(const Message& msg) {
+        auto serialized = msg.Serialize();
+        socket_.send(zmq::buffer(serialized), zmq::send_flags::none);
+    }
+    
+    std::string name_;
+    zmq::context_t context_;
+    zmq::socket_t socket_;
+};
 
 // ==================== СЦЕНАРИЙ 1: Штатная работа с ACK ====================
+
 void scenario1_alice() {
-    zmq::context_t context(1);
-    zmq::socket_t socket(context, zmq::socket_type::dealer);
-    socket.set(zmq::sockopt::routing_id, "alice");
-    socket.connect("tcp://localhost:5555");
+    TestClient alice("alice");
+    alice.Register();
     
-    std::cout << "\n========== СЦЕНАРИЙ 1: Штатная работа с ACK ==========\n" << std::endl;
+    // Отправляем сообщение Bob с NEEDS_REPLY и NEEDS_ACK
+    alice.SendMessage("bob", "Hello, Bob! (with ACK)", 12345, true, true);
     
-    register_client(socket, "alice");
-    send_message(socket, "alice", "bob", "Hello, Bob! (with ACK)", 12345, true, true);
-    
-    SimpleMessage reply;
-    if (wait_for_message(socket, reply, 5000)) {
+    Message reply;
+    if (alice.Receive(reply, 5000)) {
         std::cout << "[" << get_current_time() << "] [alice] ✓ Received reply: \"" 
-                  << reply.payload << "\" from " << reply.sender << std::endl;
+                  << std::string(reply.GetPayload().begin(), reply.GetPayload().end())
+                  << "\" from " << reply.GetSender() << std::endl;
         
-        // Отправляем ACK на полученный reply
-        if (reply.flags & 2) {  // Проверяем бит NEEDS_ACK
-            send_ack(socket, "alice", reply.correlation_id);
+        if (reply.NeedsAck()) {
+            alice.SendAck(reply.GetCorrelationId());
         }
     } else {
         std::cout << "[" << get_current_time() << "] [alice] ✗ No reply received" << std::endl;
@@ -195,29 +336,24 @@ void scenario1_alice() {
 }
 
 void scenario1_bob() {
-    zmq::context_t context(1);
-    zmq::socket_t socket(context, zmq::socket_type::dealer);
-    socket.set(zmq::sockopt::routing_id, "bob");
-    socket.connect("tcp://localhost:5555");
-    
-    std::cout << "\n========== СЦЕНАРИЙ 1: Штатная работа с ACK ==========\n" << std::endl;
-    
-    register_client(socket, "bob");
+    TestClient bob("bob");
+    bob.Register();
     std::cout << "[" << get_current_time() << "] [bob] Waiting for messages..." << std::endl;
     
-    SimpleMessage msg;
-    if (wait_for_message(socket, msg, 10000)) {
-        std::cout << "[" << get_current_time() << "] [bob] Received: \"" << msg.payload 
-                  << "\" from " << msg.sender << " (corr_id=" << msg.correlation_id 
-                  << ", needs_ack=" << (msg.flags & 2 ? "true" : "false") << ")" << std::endl;
+    Message msg;
+    if (bob.Receive(msg, 10000)) {
+        std::string payload(msg.GetPayload().begin(), msg.GetPayload().end());
+        std::cout << "[" << get_current_time() << "] [bob] Received: \"" << payload 
+                  << "\" from " << msg.GetSender() << " (corr_id=" << msg.GetCorrelationId() 
+                  << ", needs_ack=" << (msg.NeedsAck() ? "true" : "false") << ")" << std::endl;
         
-        // Отправляем ACK на полученное сообщение, если требуется
-        if (msg.flags & 2) {
-            send_ack(socket, "bob", msg.correlation_id);
+        if (msg.NeedsAck()) {
+            bob.SendAck(msg.GetCorrelationId());
         }
         
-        if (msg.flags & 1) {  // NEEDS_REPLY
-            send_reply(socket, "bob", msg.sender, "Hello, " + msg.sender + "!", msg.correlation_id, true);
+        if (msg.NeedsReply()) {
+            bob.SendReply(msg.GetSender(), "Hello, " + msg.GetSender() + "!", 
+                          msg.GetCorrelationId(), true);
             std::cout << "[" << get_current_time() << "] [bob] Reply sent with ACK requested" << std::endl;
         }
     } else {
@@ -228,26 +364,23 @@ void scenario1_bob() {
 }
 
 // ==================== СЦЕНАРИЙ 2: Получатель офлайн с ACK ====================
+
 void scenario2_alice() {
-    zmq::context_t context(1);
-    zmq::socket_t socket(context, zmq::socket_type::dealer);
-    socket.set(zmq::sockopt::routing_id, "alice");
-    socket.connect("tcp://localhost:5555");
+    TestClient alice("alice");
+    alice.Register();
     
-    std::cout << "\n========== СЦЕНАРИЙ 2: Получатель офлайн с ACK ==========\n" << std::endl;
-    
-    register_client(socket, "alice");
-    send_message(socket, "alice", "bob", "Hello, Bob! (delayed delivery with ACK)", 12345, true, true);
+    alice.SendMessage("bob", "Hello, Bob! (delayed delivery with ACK)", 12345, true, true);
     std::cout << "[" << get_current_time() << "] [alice] Waiting for reply (Bob will come online later)..." << std::endl;
     std::cout << "[" << get_current_time() << "] [alice] Timeout set to 30 seconds" << std::endl;
     
-    SimpleMessage reply;
-    if (wait_for_message(socket, reply, 30000)) {
+    Message reply;
+    if (alice.Receive(reply, 30000)) {
         std::cout << "[" << get_current_time() << "] [alice] ✓ Received reply: \"" 
-                  << reply.payload << "\" from " << reply.sender << std::endl;
+                  << std::string(reply.GetPayload().begin(), reply.GetPayload().end())
+                  << "\" from " << reply.GetSender() << std::endl;
         
-        if (reply.flags & 2) {
-            send_ack(socket, "alice", reply.correlation_id);
+        if (reply.NeedsAck()) {
+            alice.SendAck(reply.GetCorrelationId());
         }
     } else {
         std::cout << "[" << get_current_time() << "] [alice] ✗ Timeout waiting for reply" << std::endl;
@@ -255,30 +388,27 @@ void scenario2_alice() {
 }
 
 void scenario2_bob() {
-    std::cout << "\n========== СЦЕНАРИЙ 2: Получатель офлайн с ACK ==========\n" << std::endl;
     std::cout << "[" << get_current_time() << "] [bob] Waiting 2 seconds before connecting..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(2));
     
-    zmq::context_t context(1);
-    zmq::socket_t socket(context, zmq::socket_type::dealer);
-    socket.set(zmq::sockopt::routing_id, "bob");
-    socket.connect("tcp://localhost:5555");
-    
-    register_client(socket, "bob");
+    TestClient bob("bob");
+    bob.Register();
     std::cout << "[" << get_current_time() << "] [bob] Checking for pending messages..." << std::endl;
     
-    SimpleMessage msg;
-    if (wait_for_message(socket, msg, 10000)) {
-        std::cout << "[" << get_current_time() << "] [bob] Received pending: \"" << msg.payload 
-                  << "\" from " << msg.sender << " (corr_id=" << msg.correlation_id 
-                  << ", needs_ack=" << (msg.flags & 2 ? "true" : "false") << ")" << std::endl;
+    Message msg;
+    if (bob.Receive(msg, 10000)) {
+        std::string payload(msg.GetPayload().begin(), msg.GetPayload().end());
+        std::cout << "[" << get_current_time() << "] [bob] Received pending: \"" << payload 
+                  << "\" from " << msg.GetSender() << " (corr_id=" << msg.GetCorrelationId() 
+                  << ", needs_ack=" << (msg.NeedsAck() ? "true" : "false") << ")" << std::endl;
         
-        if (msg.flags & 2) {
-            send_ack(socket, "bob", msg.correlation_id);
+        if (msg.NeedsAck()) {
+            bob.SendAck(msg.GetCorrelationId());
         }
         
-        if (msg.flags & 1) {
-            send_reply(socket, "bob", msg.sender, "Hello, " + msg.sender + "! (delayed reply)", msg.correlation_id, true);
+        if (msg.NeedsReply()) {
+            bob.SendReply(msg.GetSender(), "Hello, " + msg.GetSender() + "! (delayed reply)", 
+                          msg.GetCorrelationId(), true);
             std::cout << "[" << get_current_time() << "] [bob] Reply sent" << std::endl;
         }
     } else {
@@ -290,47 +420,41 @@ void scenario2_bob() {
 }
 
 // ==================== СЦЕНАРИЙ 3: Отправитель офлайн с ACK ====================
+
 void scenario3_alice() {
-    zmq::context_t context(1);
-    zmq::socket_t socket(context, zmq::socket_type::dealer);
-    socket.set(zmq::sockopt::routing_id, "alice");
-    socket.connect("tcp://localhost:5555");
+    TestClient alice("alice");
+    alice.Register();
     
-    std::cout << "\n========== СЦЕНАРИЙ 3: Отправитель отключается, потом получает ответ с ACK ==========\n" << std::endl;
-    
-    register_client(socket, "alice");
-    send_message(socket, "alice", "bob", "Hello, Bob! (sender will disconnect)", 12345, true, true);
+    alice.SendMessage("bob", "Hello, Bob! (sender will disconnect)", 12345, true, true);
     std::cout << "[" << get_current_time() << "] [alice] Message sent with NEEDS_REPLY and NEEDS_ACK, disconnecting immediately!" << std::endl;
     std::cout << "[" << get_current_time() << "] [alice] Socket will be destroyed, but reply should be saved" << std::endl;
     std::cout << "[" << get_current_time() << "] [alice] Disconnecting..." << std::endl;
+    // alice уничтожится при выходе из функции
 }
 
 void scenario3_bob() {
-    std::cout << "\n========== СЦЕНАРИЙ 3: Получатель обрабатывает запрос с ACK ==========\n" << std::endl;
     std::cout << "[" << get_current_time() << "] [bob] Waiting 3 seconds for Alice to disconnect..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(3));
     
-    zmq::context_t context(1);
-    zmq::socket_t socket(context, zmq::socket_type::dealer);
-    socket.set(zmq::sockopt::routing_id, "bob");
-    socket.connect("tcp://localhost:5555");
-    
-    register_client(socket, "bob");
+    TestClient bob("bob");
+    bob.Register();
     std::cout << "[" << get_current_time() << "] [bob] Waiting for message from Alice..." << std::endl;
     
-    SimpleMessage msg;
-    if (wait_for_message(socket, msg, 10000)) {
-        std::cout << "[" << get_current_time() << "] [bob] Received: \"" << msg.payload 
-                  << "\" from " << msg.sender << " (corr_id=" << msg.correlation_id 
-                  << ", needs_ack=" << (msg.flags & 2 ? "true" : "false") << ")" << std::endl;
+    Message msg;
+    if (bob.Receive(msg, 10000)) {
+        std::string payload(msg.GetPayload().begin(), msg.GetPayload().end());
+        std::cout << "[" << get_current_time() << "] [bob] Received: \"" << payload 
+                  << "\" from " << msg.GetSender() << " (corr_id=" << msg.GetCorrelationId() 
+                  << ", needs_ack=" << (msg.NeedsAck() ? "true" : "false") << ")" << std::endl;
         
-        if (msg.flags & 2) {
-            send_ack(socket, "bob", msg.correlation_id);
+        if (msg.NeedsAck()) {
+            bob.SendAck(msg.GetCorrelationId());
         }
         
-        if (msg.flags & 1) {
+        if (msg.NeedsReply()) {
             std::cout << "[" << get_current_time() << "] [bob] Message requires reply, sending response with ACK..." << std::endl;
-            send_reply(socket, "bob", msg.sender, "Hello, Alice! Your reply is here!", msg.correlation_id, true);
+            bob.SendReply(msg.GetSender(), "Hello, Alice! Your reply is here!", 
+                          msg.GetCorrelationId(), true);
             std::cout << "[" << get_current_time() << "] [bob] ✓ Reply sent, but Alice is offline!" << std::endl;
             std::cout << "[" << get_current_time() << "] [bob] Reply should be stored in database and delivered when Alice reconnects" << std::endl;
         }
@@ -343,27 +467,23 @@ void scenario3_bob() {
 }
 
 void scenario3_alice_reconnect() {
-    std::cout << "\n========== СЦЕНАРИЙ 3: Отправитель переподключается и получает ответ с ACK ==========\n" << std::endl;
     std::cout << "[" << get_current_time() << "] [alice] Waiting 5 seconds before reconnecting..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(5));
     
-    zmq::context_t context(1);
-    zmq::socket_t socket(context, zmq::socket_type::dealer);
-    socket.set(zmq::sockopt::routing_id, "alice");
-    socket.connect("tcp://localhost:5555");
-    
-    register_client(socket, "alice");
+    TestClient alice("alice");
+    alice.Register();
     std::cout << "[" << get_current_time() << "] [alice] Reconnected! Checking for pending replies..." << std::endl;
     std::cout << "[" << get_current_time() << "] [alice] Timeout set to 15 seconds" << std::endl;
     
-    SimpleMessage reply;
-    if (wait_for_message(socket, reply, 15000)) {
+    Message reply;
+    if (alice.Receive(reply, 15000)) {
         std::cout << "[" << get_current_time() << "] [alice] ✓ SUCCESS: Received pending reply! \"" 
-                  << reply.payload << "\" from " << reply.sender << std::endl;
-        std::cout << "[" << get_current_time() << "] [alice] Correlation ID: " << reply.correlation_id << std::endl;
+                  << std::string(reply.GetPayload().begin(), reply.GetPayload().end())
+                  << "\" from " << reply.GetSender() << std::endl;
+        std::cout << "[" << get_current_time() << "] [alice] Correlation ID: " << reply.GetCorrelationId() << std::endl;
         
-        if (reply.flags & 2) {
-            send_ack(socket, "alice", reply.correlation_id);
+        if (reply.NeedsAck()) {
+            alice.SendAck(reply.GetCorrelationId());
         }
     } else {
         std::cout << "[" << get_current_time() << "] [alice] ✗ FAILED: No pending reply received!" << std::endl;
@@ -375,45 +495,38 @@ void scenario3_alice_reconnect() {
 }
 
 // ==================== СЦЕНАРИЙ 4: Полная отказоустойчивость с ACK ====================
+
 void scenario4_alice() {
-    zmq::context_t context(1);
-    zmq::socket_t socket(context, zmq::socket_type::dealer);
-    socket.set(zmq::sockopt::routing_id, "alice");
-    socket.connect("tcp://localhost:5555");
+    TestClient alice("alice");
+    alice.Register();
     
-    std::cout << "\n========== СЦЕНАРИЙ 4: Полная отказоустойчивость с ACK ==========\n" << std::endl;
-    
-    register_client(socket, "alice");
-    send_message(socket, "alice", "bob", "Critical message that must survive!", 54321, true, true);
+    alice.SendMessage("bob", "Critical message that must survive!", 54321, true, true);
     std::cout << "[" << get_current_time() << "] [alice] Message sent with ACK, both Alice and Bob will disconnect" << std::endl;
     std::cout << "[" << get_current_time() << "] [alice] Disconnecting..." << std::endl;
 }
 
 void scenario4_bob() {
-    std::cout << "\n========== СЦЕНАРИЙ 4: Получатель подключается позже с ACK ==========\n" << std::endl;
     std::cout << "[" << get_current_time() << "] [bob] Waiting 3 seconds before connecting..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(3));
     
-    zmq::context_t context(1);
-    zmq::socket_t socket(context, zmq::socket_type::dealer);
-    socket.set(zmq::sockopt::routing_id, "bob");
-    socket.connect("tcp://localhost:5555");
-    
-    register_client(socket, "bob");
+    TestClient bob("bob");
+    bob.Register();
     std::cout << "[" << get_current_time() << "] [bob] Checking for pending messages..." << std::endl;
     
-    SimpleMessage msg;
-    if (wait_for_message(socket, msg, 10000)) {
-        std::cout << "[" << get_current_time() << "] [bob] Received: \"" << msg.payload 
-                  << "\" from " << msg.sender << " (corr_id=" << msg.correlation_id 
-                  << ", needs_ack=" << (msg.flags & 2 ? "true" : "false") << ")" << std::endl;
+    Message msg;
+    if (bob.Receive(msg, 10000)) {
+        std::string payload(msg.GetPayload().begin(), msg.GetPayload().end());
+        std::cout << "[" << get_current_time() << "] [bob] Received: \"" << payload 
+                  << "\" from " << msg.GetSender() << " (corr_id=" << msg.GetCorrelationId() 
+                  << ", needs_ack=" << (msg.NeedsAck() ? "true" : "false") << ")" << std::endl;
         
-        if (msg.flags & 2) {
-            send_ack(socket, "bob", msg.correlation_id);
+        if (msg.NeedsAck()) {
+            bob.SendAck(msg.GetCorrelationId());
         }
         
-        if (msg.flags & 1) {
-            send_reply(socket, "bob", msg.sender, "Reply from Bob after both were offline!", msg.correlation_id, true);
+        if (msg.NeedsReply()) {
+            bob.SendReply(msg.GetSender(), "Reply from Bob after both were offline!", 
+                          msg.GetCorrelationId(), true);
             std::cout << "[" << get_current_time() << "] [bob] Reply sent with ACK, but Alice is still offline" << std::endl;
         }
     } else {
@@ -425,26 +538,22 @@ void scenario4_bob() {
 }
 
 void scenario4_alice_reconnect() {
-    std::cout << "\n========== СЦЕНАРИЙ 4: Отправитель переподключается с ACK ==========\n" << std::endl;
     std::cout << "[" << get_current_time() << "] [alice] Waiting 8 seconds before reconnecting..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(8));
     
-    zmq::context_t context(1);
-    zmq::socket_t socket(context, zmq::socket_type::dealer);
-    socket.set(zmq::sockopt::routing_id, "alice");
-    socket.connect("tcp://localhost:5555");
-    
-    register_client(socket, "alice");
+    TestClient alice("alice");
+    alice.Register();
     std::cout << "[" << get_current_time() << "] [alice] Reconnected! Checking for pending replies..." << std::endl;
     
-    SimpleMessage reply;
-    if (wait_for_message(socket, reply, 15000)) {
+    Message reply;
+    if (alice.Receive(reply, 15000)) {
         std::cout << "[" << get_current_time() << "] [alice] ✓ SUCCESS: Received pending reply! \"" 
-                  << reply.payload << "\" from " << reply.sender << std::endl;
-        std::cout << "[" << get_current_time() << "] [alice] Correlation ID: " << reply.correlation_id << std::endl;
+                  << std::string(reply.GetPayload().begin(), reply.GetPayload().end())
+                  << "\" from " << reply.GetSender() << std::endl;
+        std::cout << "[" << get_current_time() << "] [alice] Correlation ID: " << reply.GetCorrelationId() << std::endl;
         
-        if (reply.flags & 2) {
-            send_ack(socket, "alice", reply.correlation_id);
+        if (reply.NeedsAck()) {
+            alice.SendAck(reply.GetCorrelationId());
         }
     } else {
         std::cout << "[" << get_current_time() << "] [alice] ✗ No pending reply received" << std::endl;
@@ -452,6 +561,8 @@ void scenario4_alice_reconnect() {
     
     std::this_thread::sleep_for(std::chrono::seconds(2));
 }
+
+// ==================== Парсинг аргументов и main ====================
 
 void print_usage(const char* prog) {
     std::cout << "Usage: " << prog << " --scenario N --role ROLE\n\n"
@@ -505,32 +616,37 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    switch (scenario) {
-        case 1:
-            if (role == "alice") scenario1_alice();
-            else if (role == "bob") scenario1_bob();
-            else std::cerr << "Error: role must be alice or bob for scenario 1" << std::endl;
-            break;
-        case 2:
-            if (role == "alice") scenario2_alice();
-            else if (role == "bob") scenario2_bob();
-            else std::cerr << "Error: role must be alice or bob for scenario 2" << std::endl;
-            break;
-        case 3:
-            if (role == "alice") scenario3_alice();
-            else if (role == "bob") scenario3_bob();
-            else if (role == "alice_reconnect") scenario3_alice_reconnect();
-            else std::cerr << "Error: role must be alice, bob, or alice_reconnect for scenario 3" << std::endl;
-            break;
-        case 4:
-            if (role == "alice") scenario4_alice();
-            else if (role == "bob") scenario4_bob();
-            else if (role == "alice_reconnect") scenario4_alice_reconnect();
-            else std::cerr << "Error: role must be alice, bob, or alice_reconnect for scenario 4" << std::endl;
-            break;
-        default:
-            std::cerr << "Error: Invalid scenario " << scenario << std::endl;
-            return 1;
+    try {
+        switch (scenario) {
+            case 1:
+                if (role == "alice") scenario1_alice();
+                else if (role == "bob") scenario1_bob();
+                else std::cerr << "Error: role must be alice or bob for scenario 1" << std::endl;
+                break;
+            case 2:
+                if (role == "alice") scenario2_alice();
+                else if (role == "bob") scenario2_bob();
+                else std::cerr << "Error: role must be alice or bob for scenario 2" << std::endl;
+                break;
+            case 3:
+                if (role == "alice") scenario3_alice();
+                else if (role == "bob") scenario3_bob();
+                else if (role == "alice_reconnect") scenario3_alice_reconnect();
+                else std::cerr << "Error: role must be alice, bob, or alice_reconnect for scenario 3" << std::endl;
+                break;
+            case 4:
+                if (role == "alice") scenario4_alice();
+                else if (role == "bob") scenario4_bob();
+                else if (role == "alice_reconnect") scenario4_alice_reconnect();
+                else std::cerr << "Error: role must be alice, bob, or alice_reconnect for scenario 4" << std::endl;
+                break;
+            default:
+                std::cerr << "Error: Invalid scenario " << scenario << std::endl;
+                return 1;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
     }
     
     return 0;

@@ -4,6 +4,9 @@
 #include <memory>
 #include <thread>
 #include <vector>
+#include <queue>
+#include <functional>
+#include <future>
 #include <zmq.hpp>
 #include <boost/asio.hpp>
 #include <boost/asio/posix/stream_descriptor.hpp>
@@ -21,6 +24,21 @@ struct Config {
     std::string LogLevel = "info";
 };
 
+struct PendingSend {
+    zmq::message_t identity;
+    zmq::message_t data;
+    std::function<void(bool)> callback;
+    
+    PendingSend() = default;
+    PendingSend(zmq::message_t id, zmq::message_t d, std::function<void(bool)> cb)
+        : identity(std::move(id)), data(std::move(d)), callback(std::move(cb)) {}
+    
+    PendingSend(const PendingSend&) = delete;
+    PendingSend& operator=(const PendingSend&) = delete;
+    PendingSend(PendingSend&&) = default;
+    PendingSend& operator=(PendingSend&&) = default;
+};
+
 class Server {
 public:
     explicit Server(const Config& config);
@@ -28,14 +46,19 @@ public:
     
     void Run();
     void Stop();
+    
+    void SendMessage(zmq::message_t identity, zmq::message_t data, 
+                     std::function<void(bool)> callback = nullptr);
 
 private:
     void SetupZmqSocket();
     void SetupAsioIntegration();
-    void SetupTcpKeepAlive();
     void OnZmqEvent(const boost::system::error_code& ec);
     void AsioThread();
     void SetupCleanupTimer();
+    void SetupHeartbeatTimer();
+    void ProcessPendingSends();
+    void ScheduleSendProcessing();
 
 private:
     Config config_;
@@ -49,9 +72,14 @@ private:
     std::vector<std::thread> threads_;
     std::unique_ptr<boost::asio::posix::stream_descriptor> zmq_fd_;
     std::unique_ptr<boost::asio::steady_timer> cleanup_timer_;
+    std::unique_ptr<boost::asio::steady_timer> heartbeat_timer_;
     
     std::unique_ptr<Router> router_;
     std::unique_ptr<Storage> storage_;
+    
+    std::queue<PendingSend> pending_sends_;
+    std::mutex pending_sends_mutex_;
+    std::atomic<bool> sending_in_progress_{false};
 };
 
 } // namespace broker

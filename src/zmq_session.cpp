@@ -1,62 +1,35 @@
 #include "zmq_session.hpp"
+#include "server.hpp"
 #include <cstring>
 #include <spdlog/spdlog.h>
 
 namespace broker {
 
-ZmqSession::ZmqSession(zmq::message_t identity, zmq::socket_t& router_socket, Storage* storage)
+ZmqSession::ZmqSession(zmq::message_t identity, Server& server)
     : identity_(std::move(identity))
-    , router_socket_(router_socket)
-    , storage_(storage)
+    , server_(server)
     , last_activity_(std::chrono::steady_clock::now())
+    , last_receive_(std::chrono::steady_clock::now())
+    , last_heartbeat_(std::chrono::steady_clock::now())
 {
     spdlog::debug("ZmqSession created for identity with size: {}", identity_.size());
+}
+
+ZmqSession::~ZmqSession() {
+    PersistQueueToDatabase();
+    spdlog::debug("ZmqSession destroyed for client: {}", name_);
 }
 
 bool ZmqSession::CheckConnection() {
     if (!is_online_) {
         return false;
     }
-    
-    try {
-        // Используем новый API для получения событий
-        int events = router_socket_.get(zmq::sockopt::events);
-        
-        if (!(events & ZMQ_POLLOUT)) {
-            spdlog::debug("Socket for {} not ready for write, marking offline", name_);
-            is_online_ = false;
-            return false;
-        }
-        
-        // Пытаемся отправить пустое сообщение с флагом dontwait
-        // Это реально проверит, живо ли соединение
-        zmq::message_t dummy;
-        auto result = router_socket_.send(identity_, zmq::send_flags::dontwait | zmq::send_flags::sndmore);
-        if (!result) {
-            spdlog::debug("Failed to send test message to {}, marking offline", name_);
-            is_online_ = false;
-            return false;
-        }
-        
-        // Отменяем отправку (не отправляем остальные фреймы)
-        // Для этого просто не отправляем delimiter и data
-        
-        return true;
-        
-    } catch (const zmq::error_t& e) {
-        spdlog::debug("Connection check failed for {}: error {}", name_, e.num());
-        is_online_ = false;
-        return false;
-    } catch (const std::exception& e) {
-        spdlog::debug("Connection check failed for {}: {}", name_, e.what());
-        is_online_ = false;
-        return false;
-    }
+    return true;
 }
 
 void ZmqSession::PersistQueueToDatabase() {
-    if (!storage_) {
-        spdlog::debug("PersistQueueToDatabase: storage is null for {}", name_);
+    if (!persist_callback_) {
+        spdlog::debug("PersistQueueToDatabase: callback not set for {}", name_);
         return;
     }
     
@@ -69,17 +42,20 @@ void ZmqSession::PersistQueueToDatabase() {
     
     spdlog::info("Persisting {} queued messages for {} to database", outgoing_queue_.size(), name_);
     
+    size_t persisted_count = 0;
     while (!outgoing_queue_.empty()) {
         const auto& msg = outgoing_queue_.front();
-        uint64_t id = storage_->SaveMessage(msg);
-        spdlog::debug("Persisted queued message for {} to database, id: {}", name_, id);
+        persist_callback_(name_, msg);
+        persisted_count++;
         outgoing_queue_.pop();
     }
+    
+    spdlog::debug("Persisted {} messages for {}", persisted_count, name_);
 }
 
 bool ZmqSession::SendMessage(const Message& msg) {
-    // Обновляем время последней активности
     UpdateLastActivity();
+    UpdateHeartbeat();
     
     if (!is_online_) {
         EnqueueMessage(msg);
@@ -87,60 +63,60 @@ bool ZmqSession::SendMessage(const Message& msg) {
         return true;
     }
     
-    // Перед отправкой проверяем, живо ли соединение
-    if (!CheckConnection()) {
-        spdlog::warn("Connection check failed for {}, marking offline and queuing message", name_);
-        EnqueueMessage(msg);
-        return false;
-    }
-    
     return SendZmqMessage(msg);
 }
 
 bool ZmqSession::SendZmqMessage(const Message& msg) {
+    if (!send_callback_) {
+        spdlog::error("Send callback not set for session {}", name_);
+        return false;
+    }
+    
     try {
         auto serialized = msg.Serialize();
         
-        // Отправляем identity
-        auto result = router_socket_.send(identity_, zmq::send_flags::sndmore);
-        if (!result) {
-            spdlog::warn("Failed to send identity to {}, marking offline", name_);
-            is_online_ = false;
-            return false;
-        }
+        zmq::message_t identity_copy(identity_.size());
+        std::memcpy(identity_copy.data(), identity_.data(), identity_.size());
         
-        // Отправляем пустой разделитель
-        zmq::message_t delimiter;
-        result = router_socket_.send(delimiter, zmq::send_flags::sndmore);
-        if (!result) {
-            spdlog::warn("Failed to send delimiter to {}, marking offline", name_);
-            is_online_ = false;
-            return false;
-        }
-        
-        // Отправляем данные
         zmq::message_t data(serialized.data(), serialized.size());
-        result = router_socket_.send(data, zmq::send_flags::dontwait);
         
-        if (!result) {
-            spdlog::warn("Failed to send data to {}, marking offline", name_);
+        bool sent = false;
+        std::promise<bool> promise;
+        auto future = promise.get_future();
+        
+        send_callback_(std::move(identity_copy), std::move(data), 
+                      [&promise, &sent, this](bool success) {
+                          sent = success;
+                          if (!success) {
+                              spdlog::warn("Send callback reported failure for {}", name_);
+                              is_online_ = false;
+                          }
+                          promise.set_value(success);
+                      });
+        
+        auto status = future.wait_for(std::chrono::milliseconds(1000));
+        if (status == std::future_status::timeout) {
+            spdlog::warn("Send timeout for client {}, marking offline", name_);
             is_online_ = false;
             return false;
         }
         
-        spdlog::debug("Message sent to client {}: {}", name_, msg.ToString());
-        return true;
+        if (sent) {
+            spdlog::debug("Message sent to client {}: {}", name_, msg.ToString());
+        } else {
+            spdlog::warn("Failed to send message to {}, marking offline", name_);
+            is_online_ = false;
+        }
+        
+        return sent;
         
     } catch (const zmq::error_t& e) {
-        if (e.num() == EAGAIN || e.num() == EFSM || e.num() == ETERM || e.num() == ENOTSOCK) {
-            spdlog::warn("Client {} not reachable (error {}), marking offline", name_, e.num());
-            is_online_ = false;
-        } else {
-            spdlog::error("Failed to send message to {}: {}", name_, e.what());
-        }
+        spdlog::error("ZMQ error sending to {}: {}, marking offline", name_, e.what());
+        is_online_ = false;
         return false;
     } catch (const std::exception& e) {
-        spdlog::error("Failed to send message to {}: {}", name_, e.what());
+        spdlog::error("Failed to send message to {}: {}, marking offline", name_, e.what());
+        is_online_ = false;
         return false;
     }
 }
@@ -149,6 +125,20 @@ void ZmqSession::EnqueueMessage(const Message& msg) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     outgoing_queue_.push(msg);
     spdlog::debug("Message queued for client {}, queue size: {}", name_, outgoing_queue_.size());
+    
+    constexpr size_t QUEUE_PERSIST_THRESHOLD = 100;
+    if (outgoing_queue_.size() > QUEUE_PERSIST_THRESHOLD && persist_callback_) {
+        spdlog::debug("Queue size {} exceeded threshold {}, persisting to database", 
+                      outgoing_queue_.size(), QUEUE_PERSIST_THRESHOLD);
+        
+        size_t to_persist = outgoing_queue_.size() / 2;
+        for (size_t i = 0; i < to_persist && !outgoing_queue_.empty(); ++i) {
+            const auto& oldest = outgoing_queue_.front();
+            persist_callback_(name_, oldest);
+            outgoing_queue_.pop();
+        }
+        spdlog::debug("Persisted {} messages, {} remaining in queue", to_persist, outgoing_queue_.size());
+    }
 }
 
 void ZmqSession::FlushQueue() {
@@ -156,15 +146,25 @@ void ZmqSession::FlushQueue() {
     
     spdlog::debug("Flushing queue for client {}, size: {}", name_, outgoing_queue_.size());
     
+    size_t sent_count = 0;
+    size_t failed_count = 0;
+    
     while (!outgoing_queue_.empty()) {
         auto msg = outgoing_queue_.front();
         outgoing_queue_.pop();
         
-        if (!SendZmqMessage(msg)) {
+        if (SendZmqMessage(msg)) {
+            sent_count++;
+        } else {
             spdlog::warn("Failed to send queued message to {}, re-queuing", name_);
             outgoing_queue_.push(msg);
+            failed_count++;
             break;
         }
+    }
+    
+    if (sent_count > 0 || failed_count > 0) {
+        spdlog::debug("Flushed {} messages to {}, {} failed", sent_count, name_, failed_count);
     }
 }
 

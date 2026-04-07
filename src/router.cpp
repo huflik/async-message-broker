@@ -1,12 +1,14 @@
 #include "router.hpp"
+#include "server.hpp"
 #include <cstring>
 #include <spdlog/spdlog.h>
 
 namespace broker {
 
-Router::Router(Storage& storage, zmq::socket_t& router_socket)
+Router::Router(Storage& storage, zmq::socket_t& router_socket, Server& server)
     : storage_(storage)
     , router_socket_(router_socket)
+    , server_(server)
     , offline_manager_(storage)
 {
     spdlog::info("Router initialized");
@@ -58,9 +60,20 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
     zmq::message_t identity_copy(identity.size());
     std::memcpy(identity_copy.data(), identity.data(), identity.size());
     
-    auto session = std::make_shared<ZmqSession>(std::move(identity_copy), router_socket_, &storage_);
+    auto session = std::make_shared<ZmqSession>(std::move(identity_copy), server_);
     session->SetName(client_name);
     session->UpdateLastActivity();
+    session->UpdateLastReceive();
+    session->UpdateHeartbeat();
+    
+    session->SetSendCallback([this](zmq::message_t identity, zmq::message_t data, 
+                                     std::function<void(bool)> callback) {
+        server_.SendMessage(std::move(identity), std::move(data), std::move(callback));
+    });
+    
+    session->SetPersistCallback([this](const std::string& client_name, const Message& msg) {
+        PersistMessageForClient(client_name, msg);
+    });
     
     if (RegisterClient(client_name, session)) {
         spdlog::info("Client {} registered successfully", client_name);
@@ -77,37 +90,34 @@ void Router::HandleMessage(const Message& msg) {
     
     spdlog::debug("Routing message to: {}", destination);
     
-    // Сохраняем в БД со статусом PENDING
     uint64_t message_id = storage_.SaveMessage(msg);
     spdlog::debug("Message saved to database with id: {}", message_id);
     
-    // Если сообщение требует ответа - сохраняем correlation
     if (msg.NeedsReply()) {
         storage_.SaveCorrelation(message_id, msg.GetCorrelationId(), msg.GetSender());
         spdlog::debug("Saved correlation: corr_id={} -> original_sender={}", 
                       msg.GetCorrelationId(), msg.GetSender());
     }
     
-    auto session = FindSession(destination);
+    std::shared_ptr<ZmqSession> session = FindSession(destination);
     
     bool can_deliver = false;
     if (session) {
-        if (session->IsTimedOut(5)) {
-            spdlog::info("Client {} inactive for 5 seconds, marking offline", destination);
+        session->UpdateLastReceive();
+        session->UpdateHeartbeat();
+        
+        if (session->IsTimedOut(60)) {
+            spdlog::info("Client {} inactive for 60 seconds, marking offline", destination);
             session->MarkOffline();
         }
-        else if (session->CheckConnection()) {
+        else if (session->IsOnline()) {
             can_deliver = true;
-        } else {
-            spdlog::info("Client {} connection check failed, marking offline", destination);
-            session->MarkOffline();
         }
     }
     
     if (can_deliver && session && session->IsOnline()) {
         spdlog::debug("Destination {} online, sending immediately", destination);
         
-        // Если сообщение требует ACK, помечаем как SENT перед отправкой
         if (msg.NeedsAck()) {
             storage_.MarkSent(message_id);
             spdlog::debug("Message {} marked as SENT, waiting for ACK", message_id);
@@ -115,16 +125,14 @@ void Router::HandleMessage(const Message& msg) {
         
         if (session->SendMessage(msg)) {
             if (!msg.NeedsAck()) {
-                // Если ACK не требуется, сразу помечаем как доставленное
                 storage_.MarkDelivered(message_id);
-                spdlog::debug("Message {} delivered and marked as delivered (no ACK required)", message_id);
+                spdlog::debug("Message {} delivered and marked as delivered", message_id);
             } else {
                 spdlog::debug("Message {} sent, waiting for ACK from client", message_id);
             }
         } else {
-            spdlog::info("Failed to send message to {}, will be delivered later", destination);
-            // Возвращаем статус на PENDING при ошибке отправки
-            // TODO: реализовать возврат статуса
+            spdlog::info("Failed to send message to {}, marking offline", destination);
+            session->MarkOffline();
         }
     } else {
         spdlog::info("Destination {} offline, message {} stored in database", destination, message_id);
@@ -146,30 +154,24 @@ void Router::HandleReply(const Message& msg) {
                      msg.GetCorrelationId(), msg.GetDestination());
     }
     
-    uint64_t message_id = storage_.SaveMessage(reply_msg);
-    spdlog::debug("Reply saved to database with id: {}", message_id);
-    
     const std::string& destination = reply_msg.GetDestination();
     spdlog::debug("Reply destination: {}", destination);
     
-    auto session = FindSession(destination);
+    // ВСЕГДА сохраняем reply в БД - гарантия от потери
+    uint64_t message_id = storage_.SaveMessage(reply_msg);
+    spdlog::debug("Reply saved to database with id: {}", message_id);
     
-    bool can_deliver = false;
-    if (session) {
-        if (session->IsTimedOut(5)) {
-            spdlog::info("Client {} inactive for 5 seconds, marking offline", destination);
-            session->MarkOffline();
-        }
-        else if (session->CheckConnection()) {
-            can_deliver = true;
-        } else {
-            spdlog::info("Client {} connection check failed, marking offline", destination);
-            session->MarkOffline();
-        }
+    if (!original_sender.empty()) {
+        storage_.SaveCorrelation(message_id, msg.GetCorrelationId(), original_sender);
+        spdlog::debug("Saved correlation for reply: message_id={}, corr_id={}, original_sender={}", 
+                      message_id, msg.GetCorrelationId(), original_sender);
     }
     
-    if (can_deliver && session && session->IsOnline()) {
-        spdlog::debug("Destination {} online, sending reply immediately", destination);
+    // Пытаемся доставить сразу (оптимизация)
+    std::shared_ptr<ZmqSession> session = FindSession(destination);
+    
+    if (session && session->IsOnline()) {
+        spdlog::debug("Attempting immediate delivery of reply {} to {}", message_id, destination);
         
         if (reply_msg.NeedsAck()) {
             storage_.MarkSent(message_id);
@@ -178,28 +180,26 @@ void Router::HandleReply(const Message& msg) {
         if (session->SendMessage(reply_msg)) {
             if (!reply_msg.NeedsAck()) {
                 storage_.MarkDelivered(message_id);
-                spdlog::debug("Reply {} delivered and marked as delivered", message_id);
+                spdlog::debug("Reply {} delivered immediately", message_id);
             } else {
                 spdlog::debug("Reply {} sent, waiting for ACK", message_id);
             }
-        } else {
-            spdlog::info("Failed to send reply to {}, will be delivered later", destination);
+            return;
         }
-    } else {
-        spdlog::info("Destination {} offline, reply {} stored in database for later delivery", 
-                     destination, message_id);
         
-        if (!original_sender.empty() && original_sender == destination) {
-            spdlog::info("Reply for offline sender {} saved, will be delivered on reconnect", 
-                         original_sender);
-        }
+        // Отправка не удалась - помечаем сессию как offline
+        spdlog::info("Immediate delivery failed for reply {}, marking {} offline", message_id, destination);
+        session->MarkOffline();
     }
+    
+    // Если дошли сюда - сообщение уже в БД со статусом PENDING
+    // При переподключении клиента будет доставлено через DeliverPendingReplies
+    spdlog::info("Reply {} stored in database for later delivery to {}", message_id, destination);
 }
 
 void Router::HandleAck(const Message& msg) {
     spdlog::debug("Handling ACK for correlation_id: {}", msg.GetCorrelationId());
     
-    // ACK сообщение должно содержать correlation_id подтверждаемого сообщения
     uint64_t acked_correlation_id = msg.GetCorrelationId();
     
     if (acked_correlation_id == 0) {
@@ -207,21 +207,18 @@ void Router::HandleAck(const Message& msg) {
         return;
     }
     
-    // Ищем сообщение по correlation_id
-    Message original_msg = storage_.FindByCorrelation(acked_correlation_id);
+    uint64_t message_id = storage_.FindMessageIdByCorrelation(acked_correlation_id);
     
-    if (original_msg.GetType() == MessageType::Message || original_msg.GetType() == MessageType::Reply) {
-        // TODO: нужно хранить mapping от correlation_id к message_id
-        // Пока используем fallback - ищем по correlation_id в таблице correlations
-        spdlog::info("ACK received for correlation_id={} from {}", acked_correlation_id, msg.GetSender());
-        
-        // В реальной реализации нужно найти message_id по correlation_id
-        // и вызвать storage_.MarkDelivered(message_id);
-        
-        // Отправляем подтверждение брокера клиенту (опционально)
-        spdlog::debug("ACK processed successfully");
-    } else {
+    if (message_id == 0) {
         spdlog::warn("ACK for unknown correlation_id={}", acked_correlation_id);
+        return;
+    }
+    
+    if (storage_.NeedsAck(message_id)) {
+        storage_.MarkDelivered(message_id);
+        spdlog::info("Message {} marked as DELIVERED after ACK from {}", message_id, msg.GetSender());
+    } else {
+        spdlog::debug("Message {} does not require ACK, ignoring", message_id);
     }
 }
 
@@ -302,35 +299,46 @@ void Router::HandleDisconnect(const zmq::message_t& identity) {
 }
 
 void Router::DeliverOfflineMessages(const std::string& name) {
-    auto session = FindSession(name);
+    std::shared_ptr<ZmqSession> session = FindSession(name);
     
     if (!session) {
         spdlog::warn("Cannot deliver offline messages: client {} not found", name);
         return;
     }
     
-    auto pending_messages = storage_.LoadPending(name);
+    auto pending_messages = storage_.LoadPendingOnly(name);
     
     if (pending_messages.empty()) {
         spdlog::debug("No pending messages for client: {}", name);
-    } else {
-        spdlog::info("Delivering {} offline messages to: {}", pending_messages.size(), name);
+        return;
+    }
+    
+    spdlog::info("Delivering {} offline messages to: {}", pending_messages.size(), name);
+    
+    session->UpdateLastActivity();
+    session->UpdateLastReceive();
+    session->UpdateHeartbeat();
+    
+    for (const auto& pending : pending_messages) {
+        if (!session->IsOnline()) {
+            spdlog::warn("Client {} went offline during delivery, stopping", name);
+            break;
+        }
         
-        for (const auto& pending : pending_messages) {
-            // Если сообщение требует ACK, помечаем как SENT перед отправкой
-            if (pending.msg.NeedsAck()) {
-                storage_.MarkSent(pending.id);
-            }
-            
-            if (session->SendMessage(pending.msg)) {
-                if (!pending.msg.NeedsAck()) {
-                    storage_.MarkDelivered(pending.id);
-                }
-                spdlog::debug("Delivered offline message id={} to {}", pending.id, name);
+        if (pending.msg.NeedsAck()) {
+            storage_.MarkSent(pending.id);
+        }
+        
+        if (session->SendMessage(pending.msg)) {
+            if (!pending.msg.NeedsAck()) {
+                storage_.MarkDelivered(pending.id);
+                spdlog::debug("Delivered offline message id={} to {} (no ACK needed)", pending.id, name);
             } else {
-                spdlog::warn("Failed to deliver offline message id={} to {}", pending.id, name);
-                break;
+                spdlog::debug("Delivered offline message id={} to {}, waiting for ACK", pending.id, name);
             }
+        } else {
+            spdlog::warn("Failed to deliver offline message id={} to {}", pending.id, name);
+            break;
         }
     }
     
@@ -338,14 +346,17 @@ void Router::DeliverOfflineMessages(const std::string& name) {
 }
 
 void Router::DeliverPendingReplies(const std::string& name) {
-    auto session = FindSession(name);
+    spdlog::debug("DeliverPendingReplies called for client: {}", name);
+    
+    std::shared_ptr<ZmqSession> session = FindSession(name);
     
     if (!session) {
         spdlog::warn("Cannot deliver pending replies: client {} not found", name);
         return;
     }
     
-    auto pending_replies = storage_.LoadPendingRepliesForSender(name);
+    // Загружаем reply со статусом PENDING или SENT
+    auto pending_replies = storage_.LoadPendingRepliesForSenderOnly(name);
     
     if (pending_replies.empty()) {
         spdlog::debug("No pending replies for client: {}", name);
@@ -354,21 +365,33 @@ void Router::DeliverPendingReplies(const std::string& name) {
     
     spdlog::info("Delivering {} pending replies to: {}", pending_replies.size(), name);
     
+    session->UpdateLastActivity();
+    session->UpdateLastReceive();
+    session->UpdateHeartbeat();
+    
     for (const auto& reply : pending_replies) {
-        if (reply.msg.NeedsAck()) {
-            storage_.MarkSent(reply.id);
-        }
-        
-        if (session->SendMessage(reply.msg)) {
-            if (!reply.msg.NeedsAck()) {
-                storage_.MarkDelivered(reply.id);
-            }
-            spdlog::debug("Delivered pending reply id={} to original sender {}", reply.id, name);
-        } else {
-            spdlog::warn("Failed to deliver pending reply id={} to {}", reply.id, name);
+        if (!session->IsOnline()) {
+            spdlog::warn("Client {} went offline during reply delivery, stopping", name);
             break;
         }
+        
+        spdlog::debug("Attempting to deliver pending reply id={} to {}", reply.id, name);
+        
+        if (session->SendMessage(reply.msg)) {
+            storage_.MarkDelivered(reply.id);
+            spdlog::debug("Delivered pending reply id={} to {}", reply.id, name);
+        } else {
+            spdlog::warn("Failed to deliver pending reply id={} to {}, will retry later", reply.id, name);
+            // Не помечаем как delivered - при следующем подключении будет повторная попытка
+        }
     }
+}
+
+void Router::PersistMessageForClient(const std::string& client_name, const Message& msg) {
+    Message persistent_msg = msg;
+    persistent_msg.SetDestination(client_name);
+    uint64_t id = storage_.SaveMessage(persistent_msg);
+    spdlog::debug("Persisted message for client {} to database, id: {}", client_name, id);
 }
 
 void Router::PrintActiveClients() {
@@ -377,9 +400,11 @@ void Router::PrintActiveClients() {
     for (const auto& [name, session] : active_clients_) {
         const auto& identity = session->GetIdentity();
         if (identity.size() > 0) {
-            spdlog::info("  - {} (identity size: {})", name, identity.size());
+            spdlog::info("  - {} (identity size: {}, queue size: {})", 
+                         name, identity.size(), session->GetQueueSize());
         } else {
-            spdlog::info("  - {} (identity: disconnected)", name);
+            spdlog::info("  - {} (identity: disconnected, queue size: {})", 
+                         name, session->GetQueueSize());
         }
     }
 }
@@ -387,17 +412,15 @@ void Router::PrintActiveClients() {
 void Router::CleanupInactiveSessions() {
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
-    const int TIMEOUT_SECONDS = 5;
-    
+    constexpr int TIMEOUT_SECONDS = 60;
     std::vector<std::string> to_remove;
     
     for (const auto& [name, session] : active_clients_) {
-        if (session->IsTimedOut(TIMEOUT_SECONDS)) {
-            spdlog::debug("Session {} timed out (no activity for {} seconds)", name, TIMEOUT_SECONDS);
+        if (!session->IsOnline()) {
             to_remove.push_back(name);
-        } 
-        else if (!session->IsOnline()) {
-            spdlog::debug("Marked {} for cleanup (offline)", name);
+        }
+        else if (session->IsTimedOut(TIMEOUT_SECONDS)) {
+            spdlog::debug("Session {} timed out (no activity for {} seconds)", name, TIMEOUT_SECONDS);
             to_remove.push_back(name);
         }
     }
@@ -406,6 +429,11 @@ void Router::CleanupInactiveSessions() {
         auto it = active_clients_.find(name);
         if (it != active_clients_.end()) {
             it->second->PersistQueueToDatabase();
+            
+            if (it->second->GetQueueSize() > 0) {
+                spdlog::warn("Client {} still has {} messages in queue after persist", 
+                             name, it->second->GetQueueSize());
+            }
             
             const auto& identity = it->second->GetIdentity();
             std::string identity_str(
@@ -420,6 +448,22 @@ void Router::CleanupInactiveSessions() {
     
     if (!to_remove.empty()) {
         spdlog::info("Cleaned up {} inactive sessions", to_remove.size());
+    }
+}
+
+void Router::CheckHeartbeats() {
+    // Для production: минимальная проверка для отладки
+    std::lock_guard<std::mutex> lock(registry_mutex_);
+    
+    size_t online_count = 0;
+    for (const auto& [name, session] : active_clients_) {
+        if (session->IsOnline()) {
+            online_count++;
+        }
+    }
+    
+    if (online_count > 0) {
+        spdlog::trace("Heartbeat check: {} online clients", online_count);
     }
 }
 
