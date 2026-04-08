@@ -320,78 +320,6 @@ std::vector<PendingMessage> Storage::LoadPendingRepliesForSender(const std::stri
     return replies;
 }
 
-std::vector<PendingMessage> Storage::LoadPendingRepliesForSenderOnly(const std::string& sender_name) {
-    std::lock_guard<std::mutex> lock(db_mutex_);
-    
-    // Используем DISTINCT для исключения дубликатов
-    const char* sql = R"(
-        SELECT DISTINCT m.id, m.type, m.flags, m.correlation_id, m.sender, m.destination, m.payload
-        FROM messages m
-        INNER JOIN correlations c ON m.correlation_id = c.correlation_id
-        WHERE c.original_sender = ? 
-          AND m.status IN (?, ?)
-          AND m.type = ?
-        ORDER BY m.created_at ASC
-    )";
-    
-    sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK) {
-        spdlog::error("Failed to prepare select replies only statement: {}", sqlite3_errmsg(db_));
-        return {};
-    }
-    
-    sqlite3_bind_text(stmt, 1, sender_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, STATUS_PENDING);
-    sqlite3_bind_int(stmt, 3, STATUS_SENT);
-    sqlite3_bind_int(stmt, 4, static_cast<int>(MessageType::Reply));
-    
-    std::vector<PendingMessage> replies;
-    std::set<uint64_t> unique_ids;  // для отслеживания уникальных ID
-    
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        uint64_t id = sqlite3_column_int64(stmt, 0);
-        
-        // Пропускаем дубликаты
-        if (unique_ids.find(id) != unique_ids.end()) {
-            continue;
-        }
-        unique_ids.insert(id);
-        
-        PendingMessage pending;
-        pending.id = id;
-        
-        Message msg;
-        msg.SetType(static_cast<MessageType>(sqlite3_column_int(stmt, 1)));
-        msg.SetFlags(static_cast<uint8_t>(sqlite3_column_int(stmt, 2)));
-        msg.SetCorrelationId(sqlite3_column_int64(stmt, 3));
-        
-        const char* sender = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        if (sender) msg.SetSender(sender);
-        
-        const char* destination = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        if (destination) msg.SetDestination(destination);
-        
-        const void* blob = sqlite3_column_blob(stmt, 6);
-        int blob_size = sqlite3_column_bytes(stmt, 6);
-        if (blob && blob_size > 0) {
-            std::vector<uint8_t> payload(static_cast<const uint8_t*>(blob), 
-                                          static_cast<const uint8_t*>(blob) + blob_size);
-            msg.SetPayload(payload);
-        }
-        
-        pending.msg = std::move(msg);
-        replies.push_back(std::move(pending));
-        
-        spdlog::debug("Found pending reply id={} for sender {}", pending.id, sender_name);
-    }
-    
-    sqlite3_finalize(stmt);
-    
-    spdlog::debug("Loaded {} unique pending replies for sender: {}", replies.size(), sender_name);
-    return replies;
-}
-
 void Storage::MarkDelivered(uint64_t message_id) {
     std::lock_guard<std::mutex> lock(db_mutex_);
     
@@ -407,14 +335,22 @@ void Storage::MarkDelivered(uint64_t message_id) {
     rc = sqlite3_step(stmt);
     if (rc != SQLITE_DONE) {
         sqlite3_finalize(stmt);
-        throw std::runtime_error("Failed to mark message as delivered: " + 
-                                 std::string(sqlite3_errmsg(db_)));
+        throw std::runtime_error("Failed to mark message as delivered");
     }
     
-    int changes = sqlite3_changes(db_);
     sqlite3_finalize(stmt);
     
-    spdlog::debug("Message {} marked as delivered, {} rows affected", message_id, changes);
+    // Удаляем correlation запись для доставленного сообщения
+    const char* del_sql = "DELETE FROM correlations WHERE message_id = ?";
+    rc = sqlite3_prepare_v2(db_, del_sql, -1, &stmt, nullptr);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, message_id);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        spdlog::debug("Deleted correlation for delivered message {}", message_id);
+    }
+    
+    spdlog::debug("Message {} marked as delivered", message_id);
 }
 
 void Storage::MarkSent(uint64_t message_id) {
@@ -658,6 +594,156 @@ void Storage::CleanupOldMessages(int days) {
     if (deleted > 0) {
         spdlog::info("Cleaned up {} old delivered messages", deleted);
     }
+}
+
+std::vector<PendingMessage> Storage::LoadExpiredSent(int timeout_seconds) {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    
+    const char* sql = R"(
+        SELECT id, type, flags, correlation_id, sender, destination, payload
+        FROM messages
+        WHERE status = ? 
+          AND julianday('now') - julianday(created_at) * 86400 > ?
+        ORDER BY created_at ASC
+    )";
+    
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        spdlog::error("Failed to prepare select expired sent statement: {}", sqlite3_errmsg(db_));
+        return {};
+    }
+    
+    sqlite3_bind_int(stmt, 1, STATUS_SENT);
+    sqlite3_bind_int(stmt, 2, timeout_seconds);
+    
+    std::vector<PendingMessage> messages;
+    
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        PendingMessage pending;
+        pending.id = sqlite3_column_int64(stmt, 0);
+        
+        Message msg;
+        msg.SetType(static_cast<MessageType>(sqlite3_column_int(stmt, 1)));
+        msg.SetFlags(static_cast<uint8_t>(sqlite3_column_int(stmt, 2)));
+        msg.SetCorrelationId(sqlite3_column_int64(stmt, 3));
+        
+        const char* sender = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        if (sender) msg.SetSender(sender);
+        
+        const char* destination = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        if (destination) msg.SetDestination(destination);
+        
+        const void* blob = sqlite3_column_blob(stmt, 6);
+        int blob_size = sqlite3_column_bytes(stmt, 6);
+        if (blob && blob_size > 0) {
+            std::vector<uint8_t> payload(static_cast<const uint8_t*>(blob), 
+                                          static_cast<const uint8_t*>(blob) + blob_size);
+            msg.SetPayload(payload);
+        }
+        
+        pending.msg = std::move(msg);
+        messages.push_back(std::move(pending));
+    }
+    
+    sqlite3_finalize(stmt);
+    return messages;
+}
+
+void Storage::MarkPending(uint64_t message_id) {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    
+    const char* sql = "UPDATE messages SET status = ? WHERE id = ? AND status = ?";
+    
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    CheckError(rc, "Failed to prepare update statement");
+    
+    sqlite3_bind_int(stmt, 1, STATUS_PENDING);
+    sqlite3_bind_int64(stmt, 2, message_id);
+    sqlite3_bind_int(stmt, 3, STATUS_SENT);
+    
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("Failed to mark message as pending: " + 
+                                 std::string(sqlite3_errmsg(db_)));
+    }
+    
+    int changes = sqlite3_changes(db_);
+    sqlite3_finalize(stmt);
+    
+    spdlog::debug("Message {} marked as pending, {} rows affected", message_id, changes);
+}
+
+std::vector<PendingMessage> Storage::LoadPendingRepliesForSenderOnly(const std::string& sender_name) {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    
+    const char* sql = R"(
+        SELECT DISTINCT m.id, m.type, m.flags, m.correlation_id, m.sender, m.destination, m.payload
+        FROM messages m
+        INNER JOIN correlations c ON m.correlation_id = c.correlation_id
+        WHERE c.original_sender = ? 
+          AND m.status IN (?, ?)
+          AND m.type = ?
+          AND m.status != ?
+        ORDER BY m.created_at ASC
+    )";
+    
+    sqlite3_stmt* stmt;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        spdlog::error("Failed to prepare select replies only statement: {}", sqlite3_errmsg(db_));
+        return {};
+    }
+    
+    sqlite3_bind_text(stmt, 1, sender_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, STATUS_PENDING);
+    sqlite3_bind_int(stmt, 3, STATUS_SENT);
+    sqlite3_bind_int(stmt, 4, static_cast<int>(MessageType::Reply));
+    sqlite3_bind_int(stmt, 5, STATUS_DELIVERED);
+    
+    std::vector<PendingMessage> replies;
+    std::set<uint64_t> unique_ids;
+    
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        uint64_t id = sqlite3_column_int64(stmt, 0);
+        
+        if (unique_ids.find(id) != unique_ids.end()) {
+            continue;
+        }
+        unique_ids.insert(id);
+        
+        PendingMessage pending;
+        pending.id = id;
+        
+        Message msg;
+        msg.SetType(static_cast<MessageType>(sqlite3_column_int(stmt, 1)));
+        msg.SetFlags(static_cast<uint8_t>(sqlite3_column_int(stmt, 2)));
+        msg.SetCorrelationId(sqlite3_column_int64(stmt, 3));
+        
+        const char* sender = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        if (sender) msg.SetSender(sender);
+        
+        const char* destination = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        if (destination) msg.SetDestination(destination);
+        
+        const void* blob = sqlite3_column_blob(stmt, 6);
+        int blob_size = sqlite3_column_bytes(stmt, 6);
+        if (blob && blob_size > 0) {
+            std::vector<uint8_t> payload(static_cast<const uint8_t*>(blob), 
+                                          static_cast<const uint8_t*>(blob) + blob_size);
+            msg.SetPayload(payload);
+        }
+        
+        pending.msg = std::move(msg);
+        replies.push_back(std::move(pending));
+    }
+    
+    sqlite3_finalize(stmt);
+    
+    spdlog::debug("Loaded {} unique pending replies for sender: {}", replies.size(), sender_name);
+    return replies;
 }
 
 } // namespace broker

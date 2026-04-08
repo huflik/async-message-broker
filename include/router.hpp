@@ -34,13 +34,14 @@ public:
     void PrintActiveClients();
     void CleanupInactiveSessions();
     void PersistMessageForClient(const std::string& client_name, const Message& msg);
-    void CheckHeartbeats();
+    void CheckExpiredAcks();
 
 private:
     void HandleRegister(const Message& msg, const zmq::message_t& identity);
     void HandleMessage(const Message& msg);
     void HandleReply(const Message& msg);
     void HandleAck(const Message& msg);
+    void HandleUnregister(const Message& msg, const zmq::message_t& identity);
     std::shared_ptr<ZmqSession> FindSessionByIdentity(const zmq::message_t& identity);
     
     Storage& storage_;
@@ -51,6 +52,8 @@ private:
     std::unordered_map<std::string, std::shared_ptr<ZmqSession>> active_clients_;
     std::unordered_map<std::string, std::string> identity_to_name_;
     std::mutex registry_mutex_;
+    
+    int ack_timeout_seconds_;
 };
 
 } // namespace broker

@@ -42,11 +42,14 @@ void SetupLogging(const std::string& log_level = "info") {
 void PrintHelp(const char* program_name) {
     std::cout << "Usage: " << program_name << " [OPTIONS]\n"
               << "Options:\n"
-              << "  --port PORT         ZeroMQ listen port (default: 5555)\n"
-              << "  --db-path PATH      SQLite database path (default: ./broker.db)\n"
-              << "  --threads N         Number of worker threads (default: CPU cores)\n"
-              << "  --log-level LEVEL   Log level: trace, debug, info, warn, error (default: info)\n"
-              << "  --help              Show this help message\n";
+              << "  --port PORT                ZeroMQ listen port (default: 5555)\n"
+              << "  --db-path PATH             SQLite database path (default: ./broker.db)\n"
+              << "  --threads N                Number of worker threads (default: CPU cores)\n"
+              << "  --log-level LEVEL          Log level: trace, debug, info, warn, error (default: info)\n"
+              << "  --session-timeout N        Session timeout in seconds (default: 60)\n"
+              << "  --ack-timeout N            ACK timeout in seconds (default: 30)\n"
+              << "  --heartbeat-interval N     Heartbeat interval in seconds, 0=disabled (default: 0)\n"
+              << "  --help                     Show this help message\n";
 }
 
 struct CommandLineConfig {
@@ -54,6 +57,9 @@ struct CommandLineConfig {
     std::string db_path = "./broker.db";
     int threads = 0;
     std::string log_level = "info";
+    int session_timeout = 60;
+    int ack_timeout = 30;
+    int heartbeat_interval = 0;
 };
 
 CommandLineConfig ParseArgs(int argc, char* argv[]) {
@@ -73,6 +79,12 @@ CommandLineConfig ParseArgs(int argc, char* argv[]) {
             config.threads = std::stoi(argv[++i]);
         } else if (arg == "--log-level" && i + 1 < argc) {
             config.log_level = argv[++i];
+        } else if (arg == "--session-timeout" && i + 1 < argc) {
+            config.session_timeout = std::stoi(argv[++i]);
+        } else if (arg == "--ack-timeout" && i + 1 < argc) {
+            config.ack_timeout = std::stoi(argv[++i]);
+        } else if (arg == "--heartbeat-interval" && i + 1 < argc) {
+            config.heartbeat_interval = std::stoi(argv[++i]);
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
             PrintHelp(argv[0]);
@@ -93,8 +105,9 @@ int main(int argc, char* argv[]) {
     SetupLogging(cmd_config.log_level);
     
     spdlog::info("Starting Async Message Broker v1.0.0");
-    spdlog::info("Configuration: port={}, db_path={}, threads={}, log_level={}",
-                 cmd_config.port, cmd_config.db_path, cmd_config.threads, cmd_config.log_level);
+    spdlog::info("Configuration: port={}, db_path={}, threads={}, log_level={}, session_timeout={}s, ack_timeout={}s, heartbeat_interval={}s",
+                 cmd_config.port, cmd_config.db_path, cmd_config.threads, cmd_config.log_level,
+                 cmd_config.session_timeout, cmd_config.ack_timeout, cmd_config.heartbeat_interval);
     
     SetupSignalHandlers();
     
@@ -103,6 +116,9 @@ int main(int argc, char* argv[]) {
     broker_config.DbPath = cmd_config.db_path;
     broker_config.Threads = cmd_config.threads;
     broker_config.LogLevel = cmd_config.log_level;
+    broker_config.SessionTimeout = cmd_config.session_timeout;
+    broker_config.AckTimeout = cmd_config.ack_timeout;
+    broker_config.HeartbeatInterval = cmd_config.heartbeat_interval;
     
     broker::Server server(broker_config);
     

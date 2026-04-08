@@ -22,6 +22,11 @@ struct Config {
     std::string DbPath = "./broker.db";
     int Threads = 0;
     std::string LogLevel = "info";
+    
+    // Таймауты (в секундах)
+    int SessionTimeout = 60;      // Таймаут неактивной сессии (для fallback)
+    int AckTimeout = 30;           // Таймаут ожидания ACK
+    int HeartbeatInterval = 0;     // Интервал проверки heartbeat (0 = отключено)
 };
 
 struct PendingSend {
@@ -49,6 +54,8 @@ public:
     
     void SendMessage(zmq::message_t identity, zmq::message_t data, 
                      std::function<void(bool)> callback = nullptr);
+    
+    const Config& GetConfig() const { return config_; }
 
 private:
     void SetupZmqSocket();
@@ -56,7 +63,7 @@ private:
     void OnZmqEvent(const boost::system::error_code& ec);
     void AsioThread();
     void SetupCleanupTimer();
-    void SetupHeartbeatTimer();
+    void SetupAckTimeoutTimer();
     void ProcessPendingSends();
     void ScheduleSendProcessing();
 
@@ -72,7 +79,7 @@ private:
     std::vector<std::thread> threads_;
     std::unique_ptr<boost::asio::posix::stream_descriptor> zmq_fd_;
     std::unique_ptr<boost::asio::steady_timer> cleanup_timer_;
-    std::unique_ptr<boost::asio::steady_timer> heartbeat_timer_;
+    std::unique_ptr<boost::asio::steady_timer> ack_timeout_timer_;
     
     std::unique_ptr<Router> router_;
     std::unique_ptr<Storage> storage_;

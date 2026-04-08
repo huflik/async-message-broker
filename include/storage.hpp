@@ -61,11 +61,6 @@ public:
     std::vector<PendingMessage> LoadPendingRepliesForSender(const std::string& sender_name);
     
     /**
-     * Загружает только ответы со статусом PENDING для отправителя
-     */
-    std::vector<PendingMessage> LoadPendingRepliesForSenderOnly(const std::string& sender_name);
-    
-    /**
      * Помечает сообщение как доставленное (получен ACK)
      */
     void MarkDelivered(uint64_t message_id);
@@ -119,6 +114,24 @@ public:
      * Очищает старые доставленные сообщения
      */
     void CleanupOldMessages(int days = 7);
+
+    // Добавить в класс Storage в public секцию:
+
+    /**
+     * Загружает сообщения со статусом SENT, отправленные давнее timeout секунд
+    */
+    std::vector<PendingMessage> LoadExpiredSent(int timeout_seconds);
+
+    /**
+    * Возвращает сообщение в статус PENDING
+    */
+    void MarkPending(uint64_t message_id);
+
+    /**
+    * Загружает только ответы со статусом PENDING или SENT для отправителя
+    */
+    std::vector<PendingMessage> LoadPendingRepliesForSenderOnly(const std::string& sender_name);
+
 
 private:
     void CreateTables();

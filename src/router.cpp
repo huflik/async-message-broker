@@ -10,8 +10,9 @@ Router::Router(Storage& storage, zmq::socket_t& router_socket, Server& server)
     , router_socket_(router_socket)
     , server_(server)
     , offline_manager_(storage)
+    , ack_timeout_seconds_(server.GetConfig().AckTimeout)
 {
-    spdlog::info("Router initialized");
+    spdlog::info("Router initialized with ACK timeout: {}s", ack_timeout_seconds_);
 }
 
 void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
@@ -30,6 +31,9 @@ void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
         case MessageType::Ack:
             HandleAck(msg);
             break;
+        case MessageType::Unregister:
+            HandleUnregister(msg, identity);
+            break;
         default:
             spdlog::warn("Unknown message type: {}", static_cast<int>(msg.GetType()));
             break;
@@ -46,17 +50,29 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
     
     spdlog::info("Registering client: {}", client_name);
     
+    // Полностью удаляем старую сессию, если она существует
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         auto it = active_clients_.find(client_name);
         if (it != active_clients_.end()) {
             spdlog::warn("Client {} already registered, replacing old session", client_name);
+            
+            const auto& old_identity = it->second->GetIdentity();
+            std::string old_identity_str(
+                reinterpret_cast<const char*>(old_identity.data()),
+                old_identity.size()
+            );
+            identity_to_name_.erase(old_identity_str);
+            
             it->second->PersistQueueToDatabase();
             it->second->MarkOffline();
             active_clients_.erase(it);
+            
+            spdlog::debug("Old session for {} completely removed", client_name);
         }
     }
     
+    // Создаём новую сессию
     zmq::message_t identity_copy(identity.size());
     std::memcpy(identity_copy.data(), identity.data(), identity.size());
     
@@ -80,9 +96,33 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
         
         DeliverOfflineMessages(client_name);
         DeliverPendingReplies(client_name);
+    } else {
+        spdlog::error("Failed to register client {}", client_name);
     }
     
     PrintActiveClients();
+}
+
+void Router::HandleUnregister(const Message& msg, const zmq::message_t& identity) {
+    const std::string& client_name = msg.GetSender();
+    spdlog::info("Client {} explicitly unregistering", client_name);
+    
+    std::lock_guard<std::mutex> lock(registry_mutex_);
+    auto it = active_clients_.find(client_name);
+    if (it != active_clients_.end()) {
+        it->second->PersistQueueToDatabase();
+        it->second->MarkOffline();
+        
+        const auto& old_identity = it->second->GetIdentity();
+        std::string old_identity_str(
+            reinterpret_cast<const char*>(old_identity.data()),
+            old_identity.size()
+        );
+        identity_to_name_.erase(old_identity_str);
+        active_clients_.erase(it);
+        
+        spdlog::info("Client {} unregistered successfully", client_name);
+    }
 }
 
 void Router::HandleMessage(const Message& msg) {
@@ -106,11 +146,7 @@ void Router::HandleMessage(const Message& msg) {
         session->UpdateLastReceive();
         session->UpdateHeartbeat();
         
-        if (session->IsTimedOut(60)) {
-            spdlog::info("Client {} inactive for 60 seconds, marking offline", destination);
-            session->MarkOffline();
-        }
-        else if (session->IsOnline()) {
+        if (session->IsOnline()) {
             can_deliver = true;
         }
     }
@@ -187,13 +223,10 @@ void Router::HandleReply(const Message& msg) {
             return;
         }
         
-        // Отправка не удалась - помечаем сессию как offline
         spdlog::info("Immediate delivery failed for reply {}, marking {} offline", message_id, destination);
         session->MarkOffline();
     }
     
-    // Если дошли сюда - сообщение уже в БД со статусом PENDING
-    // При переподключении клиента будет доставлено через DeliverPendingReplies
     spdlog::info("Reply {} stored in database for later delivery to {}", message_id, destination);
 }
 
@@ -226,7 +259,7 @@ bool Router::RegisterClient(const std::string& name, std::shared_ptr<ZmqSession>
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
     if (active_clients_.find(name) != active_clients_.end()) {
-        spdlog::warn("Client name {} already taken", name);
+        spdlog::warn("Client name {} already taken (race condition)", name);
         return false;
     }
     
@@ -355,7 +388,6 @@ void Router::DeliverPendingReplies(const std::string& name) {
         return;
     }
     
-    // Загружаем reply со статусом PENDING или SENT
     auto pending_replies = storage_.LoadPendingRepliesForSenderOnly(name);
     
     if (pending_replies.empty()) {
@@ -375,14 +407,15 @@ void Router::DeliverPendingReplies(const std::string& name) {
             break;
         }
         
-        spdlog::debug("Attempting to deliver pending reply id={} to {}", reply.id, name);
+        if (reply.msg.NeedsAck()) {
+            storage_.MarkSent(reply.id);
+        }
         
         if (session->SendMessage(reply.msg)) {
             storage_.MarkDelivered(reply.id);
             spdlog::debug("Delivered pending reply id={} to {}", reply.id, name);
         } else {
             spdlog::warn("Failed to deliver pending reply id={} to {}, will retry later", reply.id, name);
-            // Не помечаем как delivered - при следующем подключении будет повторная попытка
         }
     }
 }
@@ -412,15 +445,11 @@ void Router::PrintActiveClients() {
 void Router::CleanupInactiveSessions() {
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
-    constexpr int TIMEOUT_SECONDS = 60;
     std::vector<std::string> to_remove;
     
     for (const auto& [name, session] : active_clients_) {
+        // Удаляем только сессии, которые явно offline
         if (!session->IsOnline()) {
-            to_remove.push_back(name);
-        }
-        else if (session->IsTimedOut(TIMEOUT_SECONDS)) {
-            spdlog::debug("Session {} timed out (no activity for {} seconds)", name, TIMEOUT_SECONDS);
             to_remove.push_back(name);
         }
     }
@@ -430,11 +459,6 @@ void Router::CleanupInactiveSessions() {
         if (it != active_clients_.end()) {
             it->second->PersistQueueToDatabase();
             
-            if (it->second->GetQueueSize() > 0) {
-                spdlog::warn("Client {} still has {} messages in queue after persist", 
-                             name, it->second->GetQueueSize());
-            }
-            
             const auto& identity = it->second->GetIdentity();
             std::string identity_str(
                 reinterpret_cast<const char*>(identity.data()),
@@ -442,28 +466,39 @@ void Router::CleanupInactiveSessions() {
             );
             identity_to_name_.erase(identity_str);
             active_clients_.erase(it);
-            spdlog::debug("Cleaned up inactive session for: {}", name);
+            spdlog::debug("Cleaned up offline session for: {}", name);
         }
     }
     
     if (!to_remove.empty()) {
-        spdlog::info("Cleaned up {} inactive sessions", to_remove.size());
+        spdlog::info("Cleaned up {} offline sessions", to_remove.size());
     }
 }
 
-void Router::CheckHeartbeats() {
-    // Для production: минимальная проверка для отладки
-    std::lock_guard<std::mutex> lock(registry_mutex_);
+void Router::CheckExpiredAcks() {
+    if (ack_timeout_seconds_ <= 0) return;
     
-    size_t online_count = 0;
-    for (const auto& [name, session] : active_clients_) {
-        if (session->IsOnline()) {
-            online_count++;
+    auto expired_messages = storage_.LoadExpiredSent(ack_timeout_seconds_);
+    
+    for (const auto& pending : expired_messages) {
+        spdlog::warn("Message {} expired (no ACK received after {} seconds), resetting to PENDING", 
+                     pending.id, ack_timeout_seconds_);
+        
+        // Возвращаем статус в PENDING для повторной отправки
+        storage_.MarkPending(pending.id);
+        
+        // Пытаемся доставить снова
+        std::shared_ptr<ZmqSession> session = FindSession(pending.msg.GetDestination());
+        if (session && session->IsOnline()) {
+            spdlog::debug("Retrying delivery of expired message {} to {}", pending.id, pending.msg.GetDestination());
+            storage_.MarkSent(pending.id);
+            if (session->SendMessage(pending.msg)) {
+                spdlog::debug("Retry successful for message {}", pending.id);
+            } else {
+                spdlog::warn("Retry failed for message {}", pending.id);
+                storage_.MarkPending(pending.id);
+            }
         }
-    }
-    
-    if (online_count > 0) {
-        spdlog::trace("Heartbeat check: {} online clients", online_count);
     }
 }
 

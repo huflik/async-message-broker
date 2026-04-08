@@ -12,11 +12,7 @@
 #include <memory>
 
 // Добавляем недостающие заголовки для сетевого порядка байт
-#include <arpa/inet.h>  // для htons, ntohs
-
-// Подключаем официальный Message класс брокера
-// В реальном проекте путь будет: #include "message.hpp"
-// Для теста копируем необходимые определения
+#include <arpa/inet.h>
 
 namespace test {
 
@@ -27,7 +23,8 @@ enum class MessageType : uint8_t {
     Register = 1,
     Message = 2,
     Reply = 3,
-    Ack = 4
+    Ack = 4,
+    Unregister = 5
 };
 
 enum MessageFlag : uint8_t {
@@ -54,7 +51,6 @@ public:
         , payload_(payload)
     {}
     
-    // Геттеры
     MessageType GetType() const { return type_; }
     uint8_t GetFlags() const { return flags_; }
     uint64_t GetCorrelationId() const { return correlation_id_; }
@@ -62,12 +58,10 @@ public:
     const std::string& GetDestination() const { return destination_; }
     const std::vector<uint8_t>& GetPayload() const { return payload_; }
     
-    // Флаги
     bool HasFlag(uint8_t flag) const { return (flags_ & flag) != 0; }
     bool NeedsReply() const { return HasFlag(FlagNeedsReply); }
     bool NeedsAck() const { return HasFlag(FlagNeedsAck); }
     
-    // Сериализация
     std::vector<uint8_t> Serialize() const {
         constexpr uint8_t PROTOCOL_VERSION = 1;
         constexpr size_t HEADER_SIZE = 15;
@@ -83,7 +77,19 @@ public:
         buffer.push_back(static_cast<uint8_t>(type_));
         buffer.push_back(flags_);
         
-        uint64_t net_corr = __builtin_bswap64(correlation_id_);
+        uint64_t net_corr;
+#if defined(__GNUC__) || defined(__clang__)
+        net_corr = __builtin_bswap64(correlation_id_);
+#else
+        net_corr = ((correlation_id_ & 0xFF00000000000000ULL) >> 56) |
+                   ((correlation_id_ & 0x00FF000000000000ULL) >> 40) |
+                   ((correlation_id_ & 0x0000FF0000000000ULL) >> 24) |
+                   ((correlation_id_ & 0x000000FF00000000ULL) >> 8) |
+                   ((correlation_id_ & 0x00000000FF000000ULL) << 8) |
+                   ((correlation_id_ & 0x0000000000FF0000ULL) << 24) |
+                   ((correlation_id_ & 0x000000000000FF00ULL) << 40) |
+                   ((correlation_id_ & 0x00000000000000FFULL) << 56);
+#endif
         const uint8_t* corr_bytes = reinterpret_cast<const uint8_t*>(&net_corr);
         buffer.insert(buffer.end(), corr_bytes, corr_bytes + 8);
         
@@ -121,7 +127,18 @@ public:
         
         uint64_t net_corr;
         std::memcpy(&net_corr, &data[pos], 8);
+#if defined(__GNUC__) || defined(__clang__)
         msg.correlation_id_ = __builtin_bswap64(net_corr);
+#else
+        msg.correlation_id_ = ((net_corr & 0xFF00000000000000ULL) >> 56) |
+                              ((net_corr & 0x00FF000000000000ULL) >> 40) |
+                              ((net_corr & 0x0000FF0000000000ULL) >> 24) |
+                              ((net_corr & 0x000000FF00000000ULL) >> 8) |
+                              ((net_corr & 0x00000000FF000000ULL) << 8) |
+                              ((net_corr & 0x0000000000FF0000ULL) << 24) |
+                              ((net_corr & 0x000000000000FF00ULL) << 40) |
+                              ((net_corr & 0x00000000000000FFULL) << 56);
+#endif
         pos += 8;
         
         uint8_t sender_len = data[pos++];
@@ -155,6 +172,7 @@ public:
             case MessageType::Message: ss << "Message"; break;
             case MessageType::Reply: ss << "Reply"; break;
             case MessageType::Ack: ss << "Ack"; break;
+            case MessageType::Unregister: ss << "Unregister"; break;
         }
         ss << ", flags=" << (int)flags_
            << ", corr_id=" << correlation_id_
@@ -201,14 +219,18 @@ public:
         , context_(1)
         , socket_(context_, zmq::socket_type::dealer)
     {
-        // Устанавливаем identity для DEALER сокета
         socket_.set(zmq::sockopt::routing_id, name);
         socket_.connect(server_addr);
         std::cout << "[" << get_current_time() << "] [" << name_ << "] Connected to " << server_addr << std::endl;
     }
     
     ~TestClient() {
+        try {
+            Unregister();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        } catch (...) {}
         socket_.close();
+        std::cout << "[" << get_current_time() << "] [" << name_ << "] Disconnected" << std::endl;
     }
     
     void Register() {
@@ -216,6 +238,12 @@ public:
         SendMessage(msg);
         std::cout << "[" << get_current_time() << "] [" << name_ << "] Registered" << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    
+    void Unregister() {
+        Message msg(MessageType::Unregister, 0, 0, name_, "", {});
+        SendMessage(msg);
+        std::cout << "[" << get_current_time() << "] [" << name_ << "] Unregistered" << std::endl;
     }
     
     void SendMessage(const std::string& to, const std::string& payload, 
@@ -257,7 +285,6 @@ public:
     int poll_result = zmq::poll(items, 1, std::chrono::milliseconds(timeout_ms));
     
     if (poll_result > 0 && (items[0].revents & ZMQ_POLLIN)) {
-        // Читаем все фреймы
         std::vector<zmq::message_t> frames;
         bool more = true;
         while (more) {
@@ -268,29 +295,27 @@ public:
             frames.push_back(std::move(frame));
         }
         
-        // Ищем фрейм с валидным сообщением (первый байт = 1 - версия протокола)
         for (const auto& frame : frames) {
             if (frame.size() > 0) {
                 const uint8_t* data = static_cast<const uint8_t*>(frame.data());
-                // Проверяем, что это не identity (слишком короткий или не начинается с 1)
-                if (frame.size() >= 3 && data[0] == 1) {
+                if (data[0] == 1) {
                     std::vector<uint8_t> msg_data(data, data + frame.size());
                     received = Message::Deserialize(msg_data);
+                    
+                    // 🔴 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: игнорируем сообщения от самого себя
+                    if (received.GetSender() == name_) {
+                        std::cout << "[" << get_current_time() << "] [" << name_ 
+                                  << "] Ignoring message from self" << std::endl;
+                        continue;  // Пропускаем своё сообщение
+                    }
+                    
+                    std::string payload(received.GetPayload().begin(), received.GetPayload().end());
+                    std::cout << "[" << get_current_time() << "] [" << name_ 
+                              << "] Received: \"" << payload << "\" from " 
+                              << received.GetSender() << std::endl;
                     return true;
                 }
             }
-        }
-        
-        // Если не нашли, выводим отладочную информацию
-        std::cout << "[" << get_current_time() << "] [" << name_ 
-                  << "] Received " << frames.size() << " frames, none valid" << std::endl;
-        for (size_t i = 0; i < frames.size(); ++i) {
-            std::cout << "  Frame " << i << ": size=" << frames[i].size();
-            if (frames[i].size() > 0) {
-                const uint8_t* d = static_cast<const uint8_t*>(frames[i].data());
-                std::cout << " first_byte=" << (int)d[0];
-            }
-            std::cout << std::endl;
         }
         return false;
     }
@@ -316,15 +341,10 @@ void scenario1_alice() {
     TestClient alice("alice");
     alice.Register();
     
-    // Отправляем сообщение Bob с NEEDS_REPLY и NEEDS_ACK
     alice.SendMessage("bob", "Hello, Bob! (with ACK)", 12345, true, true);
     
     Message reply;
     if (alice.Receive(reply, 5000)) {
-        std::cout << "[" << get_current_time() << "] [alice] ✓ Received reply: \"" 
-                  << std::string(reply.GetPayload().begin(), reply.GetPayload().end())
-                  << "\" from " << reply.GetSender() << std::endl;
-        
         if (reply.NeedsAck()) {
             alice.SendAck(reply.GetCorrelationId());
         }
@@ -342,11 +362,6 @@ void scenario1_bob() {
     
     Message msg;
     if (bob.Receive(msg, 10000)) {
-        std::string payload(msg.GetPayload().begin(), msg.GetPayload().end());
-        std::cout << "[" << get_current_time() << "] [bob] Received: \"" << payload 
-                  << "\" from " << msg.GetSender() << " (corr_id=" << msg.GetCorrelationId() 
-                  << ", needs_ack=" << (msg.NeedsAck() ? "true" : "false") << ")" << std::endl;
-        
         if (msg.NeedsAck()) {
             bob.SendAck(msg.GetCorrelationId());
         }
@@ -354,7 +369,6 @@ void scenario1_bob() {
         if (msg.NeedsReply()) {
             bob.SendReply(msg.GetSender(), "Hello, " + msg.GetSender() + "!", 
                           msg.GetCorrelationId(), true);
-            std::cout << "[" << get_current_time() << "] [bob] Reply sent with ACK requested" << std::endl;
         }
     } else {
         std::cout << "[" << get_current_time() << "] [bob] ✗ No message received" << std::endl;
@@ -371,14 +385,9 @@ void scenario2_alice() {
     
     alice.SendMessage("bob", "Hello, Bob! (delayed delivery with ACK)", 12345, true, true);
     std::cout << "[" << get_current_time() << "] [alice] Waiting for reply (Bob will come online later)..." << std::endl;
-    std::cout << "[" << get_current_time() << "] [alice] Timeout set to 30 seconds" << std::endl;
     
     Message reply;
     if (alice.Receive(reply, 30000)) {
-        std::cout << "[" << get_current_time() << "] [alice] ✓ Received reply: \"" 
-                  << std::string(reply.GetPayload().begin(), reply.GetPayload().end())
-                  << "\" from " << reply.GetSender() << std::endl;
-        
         if (reply.NeedsAck()) {
             alice.SendAck(reply.GetCorrelationId());
         }
@@ -397,11 +406,6 @@ void scenario2_bob() {
     
     Message msg;
     if (bob.Receive(msg, 10000)) {
-        std::string payload(msg.GetPayload().begin(), msg.GetPayload().end());
-        std::cout << "[" << get_current_time() << "] [bob] Received pending: \"" << payload 
-                  << "\" from " << msg.GetSender() << " (corr_id=" << msg.GetCorrelationId() 
-                  << ", needs_ack=" << (msg.NeedsAck() ? "true" : "false") << ")" << std::endl;
-        
         if (msg.NeedsAck()) {
             bob.SendAck(msg.GetCorrelationId());
         }
@@ -409,7 +413,6 @@ void scenario2_bob() {
         if (msg.NeedsReply()) {
             bob.SendReply(msg.GetSender(), "Hello, " + msg.GetSender() + "! (delayed reply)", 
                           msg.GetCorrelationId(), true);
-            std::cout << "[" << get_current_time() << "] [bob] Reply sent" << std::endl;
         }
     } else {
         std::cout << "[" << get_current_time() << "] [bob] ✗ No pending messages found" << std::endl;
@@ -426,10 +429,7 @@ void scenario3_alice() {
     alice.Register();
     
     alice.SendMessage("bob", "Hello, Bob! (sender will disconnect)", 12345, true, true);
-    std::cout << "[" << get_current_time() << "] [alice] Message sent with NEEDS_REPLY and NEEDS_ACK, disconnecting immediately!" << std::endl;
-    std::cout << "[" << get_current_time() << "] [alice] Socket will be destroyed, but reply should be saved" << std::endl;
-    std::cout << "[" << get_current_time() << "] [alice] Disconnecting..." << std::endl;
-    // alice уничтожится при выходе из функции
+    std::cout << "[" << get_current_time() << "] [alice] Message sent, disconnecting..." << std::endl;
 }
 
 void scenario3_bob() {
@@ -442,21 +442,14 @@ void scenario3_bob() {
     
     Message msg;
     if (bob.Receive(msg, 10000)) {
-        std::string payload(msg.GetPayload().begin(), msg.GetPayload().end());
-        std::cout << "[" << get_current_time() << "] [bob] Received: \"" << payload 
-                  << "\" from " << msg.GetSender() << " (corr_id=" << msg.GetCorrelationId() 
-                  << ", needs_ack=" << (msg.NeedsAck() ? "true" : "false") << ")" << std::endl;
-        
         if (msg.NeedsAck()) {
             bob.SendAck(msg.GetCorrelationId());
         }
         
         if (msg.NeedsReply()) {
-            std::cout << "[" << get_current_time() << "] [bob] Message requires reply, sending response with ACK..." << std::endl;
             bob.SendReply(msg.GetSender(), "Hello, Alice! Your reply is here!", 
                           msg.GetCorrelationId(), true);
-            std::cout << "[" << get_current_time() << "] [bob] ✓ Reply sent, but Alice is offline!" << std::endl;
-            std::cout << "[" << get_current_time() << "] [bob] Reply should be stored in database and delivered when Alice reconnects" << std::endl;
+            std::cout << "[" << get_current_time() << "] [bob] Reply sent, but Alice is offline!" << std::endl;
         }
     } else {
         std::cout << "[" << get_current_time() << "] [bob] ✗ No message received" << std::endl;
@@ -473,21 +466,15 @@ void scenario3_alice_reconnect() {
     TestClient alice("alice");
     alice.Register();
     std::cout << "[" << get_current_time() << "] [alice] Reconnected! Checking for pending replies..." << std::endl;
-    std::cout << "[" << get_current_time() << "] [alice] Timeout set to 15 seconds" << std::endl;
     
     Message reply;
     if (alice.Receive(reply, 15000)) {
-        std::cout << "[" << get_current_time() << "] [alice] ✓ SUCCESS: Received pending reply! \"" 
-                  << std::string(reply.GetPayload().begin(), reply.GetPayload().end())
-                  << "\" from " << reply.GetSender() << std::endl;
-        std::cout << "[" << get_current_time() << "] [alice] Correlation ID: " << reply.GetCorrelationId() << std::endl;
-        
+        std::cout << "[" << get_current_time() << "] [alice] ✓ SUCCESS: Received pending reply!" << std::endl;
         if (reply.NeedsAck()) {
             alice.SendAck(reply.GetCorrelationId());
         }
     } else {
         std::cout << "[" << get_current_time() << "] [alice] ✗ FAILED: No pending reply received!" << std::endl;
-        std::cout << "[" << get_current_time() << "] [alice] This indicates correlation delivery is not working" << std::endl;
     }
     
     std::cout << "\n[" << get_current_time() << "] [alice] Keeping connection for 3 seconds..." << std::endl;
@@ -501,8 +488,7 @@ void scenario4_alice() {
     alice.Register();
     
     alice.SendMessage("bob", "Critical message that must survive!", 54321, true, true);
-    std::cout << "[" << get_current_time() << "] [alice] Message sent with ACK, both Alice and Bob will disconnect" << std::endl;
-    std::cout << "[" << get_current_time() << "] [alice] Disconnecting..." << std::endl;
+    std::cout << "[" << get_current_time() << "] [alice] Message sent, disconnecting..." << std::endl;
 }
 
 void scenario4_bob() {
@@ -515,11 +501,6 @@ void scenario4_bob() {
     
     Message msg;
     if (bob.Receive(msg, 10000)) {
-        std::string payload(msg.GetPayload().begin(), msg.GetPayload().end());
-        std::cout << "[" << get_current_time() << "] [bob] Received: \"" << payload 
-                  << "\" from " << msg.GetSender() << " (corr_id=" << msg.GetCorrelationId() 
-                  << ", needs_ack=" << (msg.NeedsAck() ? "true" : "false") << ")" << std::endl;
-        
         if (msg.NeedsAck()) {
             bob.SendAck(msg.GetCorrelationId());
         }
@@ -527,7 +508,7 @@ void scenario4_bob() {
         if (msg.NeedsReply()) {
             bob.SendReply(msg.GetSender(), "Reply from Bob after both were offline!", 
                           msg.GetCorrelationId(), true);
-            std::cout << "[" << get_current_time() << "] [bob] Reply sent with ACK, but Alice is still offline" << std::endl;
+            std::cout << "[" << get_current_time() << "] [bob] Reply sent, but Alice is still offline" << std::endl;
         }
     } else {
         std::cout << "[" << get_current_time() << "] [bob] ✗ No pending messages found" << std::endl;
@@ -547,11 +528,7 @@ void scenario4_alice_reconnect() {
     
     Message reply;
     if (alice.Receive(reply, 15000)) {
-        std::cout << "[" << get_current_time() << "] [alice] ✓ SUCCESS: Received pending reply! \"" 
-                  << std::string(reply.GetPayload().begin(), reply.GetPayload().end())
-                  << "\" from " << reply.GetSender() << std::endl;
-        std::cout << "[" << get_current_time() << "] [alice] Correlation ID: " << reply.GetCorrelationId() << std::endl;
-        
+        std::cout << "[" << get_current_time() << "] [alice] ✓ SUCCESS: Received pending reply!" << std::endl;
         if (reply.NeedsAck()) {
             alice.SendAck(reply.GetCorrelationId());
         }

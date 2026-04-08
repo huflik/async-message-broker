@@ -12,6 +12,8 @@ Server::Server(const Config& config)
     , router_socket_(zmq_context_, zmq::socket_type::router)
 {
     spdlog::info("Initializing server...");
+    spdlog::info("Configuration: session_timeout={}s, ack_timeout={}s, heartbeat_interval={}s",
+                 config_.SessionTimeout, config_.AckTimeout, config_.HeartbeatInterval);
     
     storage_ = std::make_unique<Storage>(config_.DbPath);
     router_ = std::make_unique<Router>(*storage_, router_socket_, *this);
@@ -31,18 +33,18 @@ void Server::SetupZmqSocket() {
     
     router_socket_.set(zmq::sockopt::router_handover, 1);
     
-    // TCP keepalive для обнаружения разрыва соединения
     router_socket_.set(zmq::sockopt::tcp_keepalive, 1);
     router_socket_.set(zmq::sockopt::tcp_keepalive_idle, 5);
     router_socket_.set(zmq::sockopt::tcp_keepalive_intvl, 2);
     router_socket_.set(zmq::sockopt::tcp_keepalive_cnt, 2);
     
-    // ZeroMQ heartbeat для надёжного обнаружения разрыва
-    router_socket_.set(zmq::sockopt::heartbeat_ivl, 3000);      // отправлять heartbeat каждые 3 сек
-    router_socket_.set(zmq::sockopt::heartbeat_timeout, 10000); // ждать ответ 10 сек
-    router_socket_.set(zmq::sockopt::heartbeat_ttl, 3000);      // TTL 3 сек
+    if (config_.HeartbeatInterval > 0) {
+        router_socket_.set(zmq::sockopt::heartbeat_ivl, config_.HeartbeatInterval * 1000);
+        router_socket_.set(zmq::sockopt::heartbeat_timeout, config_.HeartbeatInterval * 3 * 1000);
+        router_socket_.set(zmq::sockopt::heartbeat_ttl, config_.HeartbeatInterval * 1000);
+        spdlog::debug("ZMQ heartbeat configured: ivl={}s", config_.HeartbeatInterval);
+    }
     
-    spdlog::debug("ZMQ heartbeat configured: ivl=3s, timeout=10s, ttl=3s");
     spdlog::debug("TCP keepalive configured: idle=5s, interval=2s, count=2");
     
     router_socket_.set(zmq::sockopt::rcvtimeo, 0);
@@ -159,7 +161,7 @@ void Server::ProcessPendingSends() {
     while (!sends.empty()) {
         auto& send = sends.front();
         try {
-            auto result = router_socket_.send(send.identity, zmq::send_flags::sndmore);
+            auto result = router_socket_.send(send.identity, zmq::send_flags::dontwait | zmq::send_flags::sndmore);
             if (!result) {
                 spdlog::warn("Failed to send identity frame");
                 if (send.callback) send.callback(false);
@@ -168,7 +170,7 @@ void Server::ProcessPendingSends() {
             }
             
             zmq::message_t delimiter;
-            result = router_socket_.send(delimiter, zmq::send_flags::sndmore);
+            result = router_socket_.send(delimiter, zmq::send_flags::dontwait | zmq::send_flags::sndmore);
             if (!result) {
                 spdlog::warn("Failed to send delimiter frame");
                 if (send.callback) send.callback(false);
@@ -213,44 +215,17 @@ void Server::ScheduleSendProcessing() {
 
 void Server::SendMessage(zmq::message_t identity, zmq::message_t data, 
                          std::function<void(bool)> callback) {
-    try {
-        auto result = router_socket_.send(identity, zmq::send_flags::dontwait | zmq::send_flags::sndmore);
-        if (!result) {
-            spdlog::warn("Failed to send identity frame");
-            if (callback) callback(false);
-            return;
-        }
-        
-        zmq::message_t delimiter;
-        result = router_socket_.send(delimiter, zmq::send_flags::dontwait | zmq::send_flags::sndmore);
-        if (!result) {
-            spdlog::warn("Failed to send delimiter frame");
-            if (callback) callback(false);
-            return;
-        }
-        
-        result = router_socket_.send(data, zmq::send_flags::dontwait);
-        if (!result) {
-            spdlog::warn("Failed to send data frame");
-            if (callback) callback(false);
-            return;
-        }
-        
-        spdlog::trace("Message sent successfully");
-        if (callback) callback(true);
-        
-    } catch (const zmq::error_t& e) {
-        spdlog::error("ZMQ error while sending: {}", e.what());
-        if (callback) callback(false);
-    } catch (const std::exception& e) {
-        spdlog::error("Error sending message: {}", e.what());
-        if (callback) callback(false);
+    {
+        std::lock_guard<std::mutex> lock(pending_sends_mutex_);
+        pending_sends_.emplace(std::move(identity), std::move(data), std::move(callback));
     }
+    
+    ScheduleSendProcessing();
 }
 
 void Server::SetupCleanupTimer() {
     cleanup_timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
-    cleanup_timer_->expires_after(std::chrono::seconds(5));
+    cleanup_timer_->expires_after(std::chrono::seconds(10));
     
     cleanup_timer_->async_wait([this](const boost::system::error_code& ec) {
         if (!ec && running_) {
@@ -260,14 +235,16 @@ void Server::SetupCleanupTimer() {
     });
 }
 
-void Server::SetupHeartbeatTimer() {
-    heartbeat_timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
-    heartbeat_timer_->expires_after(std::chrono::seconds(30));
+void Server::SetupAckTimeoutTimer() {
+    if (config_.AckTimeout <= 0) return;
     
-    heartbeat_timer_->async_wait([this](const boost::system::error_code& ec) {
+    ack_timeout_timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
+    ack_timeout_timer_->expires_after(std::chrono::seconds(config_.AckTimeout));
+    
+    ack_timeout_timer_->async_wait([this](const boost::system::error_code& ec) {
         if (!ec && running_) {
-            router_->CheckHeartbeats();
-            SetupHeartbeatTimer();
+            router_->CheckExpiredAcks();
+            SetupAckTimeoutTimer();
         }
     });
 }
@@ -291,7 +268,7 @@ void Server::Run() {
     spdlog::info("Starting server...");
     
     SetupCleanupTimer();
-    SetupHeartbeatTimer();
+    SetupAckTimeoutTimer();
     
     for (int i = 0; i < config_.Threads; ++i) {
         threads_.emplace_back(&Server::AsioThread, this);
