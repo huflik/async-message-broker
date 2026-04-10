@@ -139,7 +139,14 @@ void Router::HandleMessage(const Message& msg) {
                       msg.GetCorrelationId(), msg.GetSender());
     }
     
-    std::shared_ptr<ZmqSession> session = FindSession(destination);
+    std::shared_ptr<ZmqSession> session;
+    {
+        std::lock_guard<std::mutex> lock(registry_mutex_);
+        auto it = active_clients_.find(destination);
+        if (it != active_clients_.end()) {
+            session = it->second;
+        }
+    }
     
     bool can_deliver = false;
     if (session) {
@@ -197,14 +204,21 @@ void Router::HandleReply(const Message& msg) {
     uint64_t message_id = storage_.SaveMessage(reply_msg);
     spdlog::debug("Reply saved to database with id: {}", message_id);
     
-    if (!original_sender.empty()) {
-        storage_.SaveCorrelation(message_id, msg.GetCorrelationId(), original_sender);
-        spdlog::debug("Saved correlation for reply: message_id={}, corr_id={}, original_sender={}", 
-                      message_id, msg.GetCorrelationId(), original_sender);
-    }
+    // ВСЕГДА сохраняем correlation для Reply, даже если original_sender не найден
+    // Это нужно для обработки ACK от alice (оригинального отправителя)
+    std::string correlation_owner = !original_sender.empty() ? original_sender : reply_msg.GetDestination();
+    storage_.SaveCorrelation(message_id, msg.GetCorrelationId(), correlation_owner);
+    spdlog::debug("Saved correlation for reply: message_id={}, corr_id={}, owner={}", 
+                  message_id, msg.GetCorrelationId(), correlation_owner);
     
-    // Пытаемся доставить сразу (оптимизация)
-    std::shared_ptr<ZmqSession> session = FindSession(destination);
+    std::shared_ptr<ZmqSession> session;
+    {
+        std::lock_guard<std::mutex> lock(registry_mutex_);
+        auto it = active_clients_.find(destination);
+        if (it != active_clients_.end()) {
+            session = it->second;
+        }
+    }
     
     if (session && session->IsOnline()) {
         spdlog::debug("Attempting immediate delivery of reply {} to {}", message_id, destination);
@@ -240,16 +254,27 @@ void Router::HandleAck(const Message& msg) {
         return;
     }
     
-    uint64_t message_id = storage_.FindMessageIdByCorrelation(acked_correlation_id);
+    const std::string& ack_sender = msg.GetSender();
+    
+    // Ищем сообщение, которое получатель ACK должен был получить
+    // То есть destination = ack_sender
+    uint64_t message_id = storage_.FindMessageIdByCorrelationAndDestination(acked_correlation_id, ack_sender);
     
     if (message_id == 0) {
-        spdlog::warn("ACK for unknown correlation_id={}", acked_correlation_id);
-        return;
+        // Fallback: старый метод для обратной совместимости
+        message_id = storage_.FindMessageIdByCorrelation(acked_correlation_id);
+        if (message_id == 0) {
+            spdlog::warn("ACK for unknown correlation_id={}", acked_correlation_id);
+            return;
+        }
+        spdlog::debug("Using fallback: found message_id={} for correlation_id={}", 
+                      message_id, acked_correlation_id);
     }
     
     if (storage_.NeedsAck(message_id)) {
         storage_.MarkDelivered(message_id);
-        spdlog::info("Message {} marked as DELIVERED after ACK from {}", message_id, msg.GetSender());
+        storage_.MarkAckReceived(message_id, ack_sender);
+        spdlog::info("Message {} marked as DELIVERED after ACK from {}", message_id, ack_sender);
     } else {
         spdlog::debug("Message {} does not require ACK, ignoring", message_id);
     }
@@ -332,14 +357,22 @@ void Router::HandleDisconnect(const zmq::message_t& identity) {
 }
 
 void Router::DeliverOfflineMessages(const std::string& name) {
-    std::shared_ptr<ZmqSession> session = FindSession(name);
+    std::shared_ptr<ZmqSession> session;
+    {
+        std::lock_guard<std::mutex> lock(registry_mutex_);
+        auto it = active_clients_.find(name);
+        if (it != active_clients_.end()) {
+            session = it->second;
+        }
+    }
     
     if (!session) {
         spdlog::warn("Cannot deliver offline messages: client {} not found", name);
         return;
     }
     
-    auto pending_messages = storage_.LoadPendingOnly(name);
+    // Загружаем ТОЛЬКО обычные сообщения (НЕ Reply), где клиент - получатель
+    auto pending_messages = storage_.LoadPendingMessagesOnly(name);
     
     if (pending_messages.empty()) {
         spdlog::debug("No pending messages for client: {}", name);
@@ -381,13 +414,22 @@ void Router::DeliverOfflineMessages(const std::string& name) {
 void Router::DeliverPendingReplies(const std::string& name) {
     spdlog::debug("DeliverPendingReplies called for client: {}", name);
     
-    std::shared_ptr<ZmqSession> session = FindSession(name);
+    std::shared_ptr<ZmqSession> session;
+    {
+        std::lock_guard<std::mutex> lock(registry_mutex_);
+        auto it = active_clients_.find(name);
+        if (it != active_clients_.end()) {
+            session = it->second;
+        }
+    }
     
     if (!session) {
         spdlog::warn("Cannot deliver pending replies: client {} not found", name);
         return;
     }
     
+    // Загружаем ТОЛЬКО Reply сообщения, где клиент - original_sender
+    // И только те, у которых статус PENDING (еще не отправленные)
     auto pending_replies = storage_.LoadPendingRepliesForSenderOnly(name);
     
     if (pending_replies.empty()) {
@@ -448,7 +490,6 @@ void Router::CleanupInactiveSessions() {
     std::vector<std::string> to_remove;
     
     for (const auto& [name, session] : active_clients_) {
-        // Удаляем только сессии, которые явно offline
         if (!session->IsOnline()) {
             to_remove.push_back(name);
         }
@@ -484,13 +525,21 @@ void Router::CheckExpiredAcks() {
         spdlog::warn("Message {} expired (no ACK received after {} seconds), resetting to PENDING", 
                      pending.id, ack_timeout_seconds_);
         
-        // Возвращаем статус в PENDING для повторной отправки
         storage_.MarkPending(pending.id);
         
-        // Пытаемся доставить снова
-        std::shared_ptr<ZmqSession> session = FindSession(pending.msg.GetDestination());
-        if (session && session->IsOnline()) {
-            spdlog::debug("Retrying delivery of expired message {} to {}", pending.id, pending.msg.GetDestination());
+        std::shared_ptr<ZmqSession> session;
+        std::string destination = pending.msg.GetDestination();
+        
+        {
+            std::lock_guard<std::mutex> lock(registry_mutex_);
+            auto it = active_clients_.find(destination);
+            if (it != active_clients_.end() && it->second->IsOnline()) {
+                session = it->second;
+            }
+        }
+        
+        if (session) {
+            spdlog::debug("Retrying delivery of expired message {} to {}", pending.id, destination);
             storage_.MarkSent(pending.id);
             if (session->SendMessage(pending.msg)) {
                 spdlog::debug("Retry successful for message {}", pending.id);

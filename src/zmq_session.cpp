@@ -81,12 +81,14 @@ bool ZmqSession::SendZmqMessage(const Message& msg) {
         zmq::message_t data(serialized.data(), serialized.size());
         
         bool sent = false;
+        bool callback_called = false;
         std::promise<bool> promise;
         auto future = promise.get_future();
         
         send_callback_(std::move(identity_copy), std::move(data), 
-                      [&promise, &sent, this](bool success) {
+                      [&promise, &sent, &callback_called, this](bool success) {
                           sent = success;
+                          callback_called = true;
                           if (!success) {
                               spdlog::warn("Send callback reported failure for {}", name_);
                               is_online_ = false;
@@ -97,6 +99,16 @@ bool ZmqSession::SendZmqMessage(const Message& msg) {
         auto status = future.wait_for(std::chrono::milliseconds(1000));
         if (status == std::future_status::timeout) {
             spdlog::warn("Send timeout for client {}, marking offline", name_);
+            is_online_ = false;
+            // Исправление: не оставляем висящий promise
+            // promise уже не будет установлен, но это нормально для timeout
+            // Важно: не удаляем session, просто помечаем offline
+            return false;
+        }
+        
+        // Исправление: проверяем, что callback был вызван
+        if (!callback_called) {
+            spdlog::error("Callback was not called for client {}", name_);
             is_online_ = false;
             return false;
         }

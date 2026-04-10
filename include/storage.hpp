@@ -115,27 +115,43 @@ public:
      */
     void CleanupOldMessages(int days = 7);
 
-    // Добавить в класс Storage в public секцию:
-
     /**
      * Загружает сообщения со статусом SENT, отправленные давнее timeout секунд
-    */
+     */
     std::vector<PendingMessage> LoadExpiredSent(int timeout_seconds);
 
     /**
-    * Возвращает сообщение в статус PENDING
-    */
+     * Возвращает сообщение в статус PENDING
+     */
     void MarkPending(uint64_t message_id);
 
     /**
-    * Загружает только ответы со статусом PENDING или SENT для отправителя
-    */
+     * Загружает только ответы со статусом PENDING или SENT для отправителя
+     */
     std::vector<PendingMessage> LoadPendingRepliesForSenderOnly(const std::string& sender_name);
+    
+    /**
+     * Удаляет correlation запись после получения ACK от оригинального отправителя
+     * @param message_id ID сообщения
+     * @param ack_sender Отправитель ACK (проверяется, что это original_sender)
+     */
+    void MarkAckReceived(uint64_t message_id, const std::string& ack_sender);
 
+    /**
+    * Загружает только обычные сообщения (НЕ Reply) для клиента-получателя
+    * Загружает сообщения со статусом PENDING
+    */
+    std::vector<PendingMessage> LoadPendingMessagesOnly(const std::string& client_name);
+
+    /**
+    * Находит message_id по correlation_id и получателю
+    * @return message_id или 0 если не найден
+    */
+    uint64_t FindMessageIdByCorrelationAndDestination(uint64_t correlation_id, const std::string& destination);
 
 private:
     void CreateTables();
-    void CheckError(int rc, const std::string& msg);
+    void ThrowOnDbError(int rc, const std::string& msg);
     
     sqlite3* db_ = nullptr;
     std::string db_path_;
