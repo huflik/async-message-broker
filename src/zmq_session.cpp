@@ -20,13 +20,6 @@ ZmqSession::~ZmqSession() {
     spdlog::debug("ZmqSession destroyed for client: {}", name_);
 }
 
-bool ZmqSession::CheckConnection() {
-    if (!is_online_) {
-        return false;
-    }
-    return true;
-}
-
 void ZmqSession::PersistQueueToDatabase() {
     if (!persist_callback_) {
         spdlog::debug("PersistQueueToDatabase: callback not set for {}", name_);
@@ -100,13 +93,9 @@ bool ZmqSession::SendZmqMessage(const Message& msg) {
         if (status == std::future_status::timeout) {
             spdlog::warn("Send timeout for client {}, marking offline", name_);
             is_online_ = false;
-            // Исправление: не оставляем висящий promise
-            // promise уже не будет установлен, но это нормально для timeout
-            // Важно: не удаляем session, просто помечаем offline
             return false;
         }
         
-        // Исправление: проверяем, что callback был вызван
         if (!callback_called) {
             spdlog::error("Callback was not called for client {}", name_);
             is_online_ = false;

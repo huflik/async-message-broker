@@ -9,7 +9,6 @@ Router::Router(Storage& storage, zmq::socket_t& router_socket, Server& server)
     : storage_(storage)
     , router_socket_(router_socket)
     , server_(server)
-    , offline_manager_(storage)
     , ack_timeout_seconds_(server.GetConfig().AckTimeout)
 {
     spdlog::info("Router initialized with ACK timeout: {}s", ack_timeout_seconds_);
@@ -50,7 +49,6 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
     
     spdlog::info("Registering client: {}", client_name);
     
-    // Полностью удаляем старую сессию, если она существует
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         auto it = active_clients_.find(client_name);
@@ -72,7 +70,6 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
         }
     }
     
-    // Создаём новую сессию
     zmq::message_t identity_copy(identity.size());
     std::memcpy(identity_copy.data(), identity.data(), identity.size());
     
@@ -200,12 +197,9 @@ void Router::HandleReply(const Message& msg) {
     const std::string& destination = reply_msg.GetDestination();
     spdlog::debug("Reply destination: {}", destination);
     
-    // ВСЕГДА сохраняем reply в БД - гарантия от потери
     uint64_t message_id = storage_.SaveMessage(reply_msg);
     spdlog::debug("Reply saved to database with id: {}", message_id);
     
-    // ВСЕГДА сохраняем correlation для Reply, даже если original_sender не найден
-    // Это нужно для обработки ACK от alice (оригинального отправителя)
     std::string correlation_owner = !original_sender.empty() ? original_sender : reply_msg.GetDestination();
     storage_.SaveCorrelation(message_id, msg.GetCorrelationId(), correlation_owner);
     spdlog::debug("Saved correlation for reply: message_id={}, corr_id={}, owner={}", 
@@ -256,12 +250,9 @@ void Router::HandleAck(const Message& msg) {
     
     const std::string& ack_sender = msg.GetSender();
     
-    // Ищем сообщение, которое получатель ACK должен был получить
-    // То есть destination = ack_sender
     uint64_t message_id = storage_.FindMessageIdByCorrelationAndDestination(acked_correlation_id, ack_sender);
     
     if (message_id == 0) {
-        // Fallback: старый метод для обратной совместимости
         message_id = storage_.FindMessageIdByCorrelation(acked_correlation_id);
         if (message_id == 0) {
             spdlog::warn("ACK for unknown correlation_id={}", acked_correlation_id);
@@ -327,35 +318,6 @@ std::shared_ptr<ZmqSession> Router::FindSession(const std::string& name) {
     return nullptr;
 }
 
-std::shared_ptr<ZmqSession> Router::FindSessionByIdentity(const zmq::message_t& identity) {
-    std::lock_guard<std::mutex> lock(registry_mutex_);
-    
-    std::string identity_str(
-        reinterpret_cast<const char*>(identity.data()),
-        identity.size()
-    );
-    
-    auto it = identity_to_name_.find(identity_str);
-    if (it != identity_to_name_.end()) {
-        auto session_it = active_clients_.find(it->second);
-        if (session_it != active_clients_.end()) {
-            return session_it->second;
-        }
-    }
-    return nullptr;
-}
-
-void Router::HandleDisconnect(const zmq::message_t& identity) {
-    auto session = FindSessionByIdentity(identity);
-    
-    if (session) {
-        std::string name = session->GetName();
-        spdlog::info("Client disconnected: {}", name);
-        session->MarkOffline();
-        UnregisterClient(name);
-    }
-}
-
 void Router::DeliverOfflineMessages(const std::string& name) {
     std::shared_ptr<ZmqSession> session;
     {
@@ -371,7 +333,6 @@ void Router::DeliverOfflineMessages(const std::string& name) {
         return;
     }
     
-    // Загружаем ТОЛЬКО обычные сообщения (НЕ Reply), где клиент - получатель
     auto pending_messages = storage_.LoadPendingMessagesOnly(name);
     
     if (pending_messages.empty()) {
@@ -428,8 +389,6 @@ void Router::DeliverPendingReplies(const std::string& name) {
         return;
     }
     
-    // Загружаем ТОЛЬКО Reply сообщения, где клиент - original_sender
-    // И только те, у которых статус PENDING (еще не отправленные)
     auto pending_replies = storage_.LoadPendingRepliesForSenderOnly(name);
     
     if (pending_replies.empty()) {

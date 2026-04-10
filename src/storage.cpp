@@ -13,7 +13,6 @@ Storage::Storage(const std::string& db_path)
     int rc = sqlite3_open(db_path.c_str(), &db_);
     ThrowOnDbError(rc, "Failed to open database");
     
-    // Включаем WAL-режим для лучшей производительности и надёжности
     char* errmsg = nullptr;
     rc = sqlite3_exec(db_, "PRAGMA journal_mode=WAL;", nullptr, nullptr, &errmsg);
     if (rc != SQLITE_OK) {
@@ -21,7 +20,6 @@ Storage::Storage(const std::string& db_path)
         sqlite3_free(errmsg);
     }
     
-    // Устанавливаем таймаут ожидания блокировки
     rc = sqlite3_exec(db_, "PRAGMA busy_timeout=10000;", nullptr, nullptr, &errmsg);
     if (rc != SQLITE_OK) {
         spdlog::warn("Failed to set busy_timeout: {}", errmsg);
@@ -154,59 +152,6 @@ uint64_t Storage::SaveMessageWithStatus(const Message& msg, int status) {
     return message_id;
 }
 
-std::vector<PendingMessage> Storage::LoadPending(const std::string& client_name) {
-    std::lock_guard<std::mutex> lock(db_mutex_);
-    
-    const char* sql = R"(
-        SELECT id, type, flags, correlation_id, sender, destination, payload
-        FROM messages
-        WHERE destination = ? AND status IN (?, ?)
-        ORDER BY created_at ASC
-    )";
-    
-    sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    ThrowOnDbError(rc, "Failed to prepare select statement");
-    
-    sqlite3_bind_text(stmt, 1, client_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, STATUS_PENDING);
-    sqlite3_bind_int(stmt, 3, STATUS_SENT);
-    
-    std::vector<PendingMessage> messages;
-    
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        PendingMessage pending;
-        pending.id = sqlite3_column_int64(stmt, 0);
-        
-        Message msg;
-        msg.SetType(static_cast<MessageType>(sqlite3_column_int(stmt, 1)));
-        msg.SetFlags(static_cast<uint8_t>(sqlite3_column_int(stmt, 2)));
-        msg.SetCorrelationId(sqlite3_column_int64(stmt, 3));
-        
-        const char* sender = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        if (sender) msg.SetSender(sender);
-        
-        const char* destination = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        if (destination) msg.SetDestination(destination);
-        
-        const void* blob = sqlite3_column_blob(stmt, 6);
-        int blob_size = sqlite3_column_bytes(stmt, 6);
-        if (blob && blob_size > 0) {
-            std::vector<uint8_t> payload(static_cast<const uint8_t*>(blob), 
-                                          static_cast<const uint8_t*>(blob) + blob_size);
-            msg.SetPayload(payload);
-        }
-        
-        pending.msg = std::move(msg);
-        messages.push_back(std::move(pending));
-    }
-    
-    sqlite3_finalize(stmt);
-    
-    spdlog::debug("Loaded {} pending messages for client: {}", messages.size(), client_name);
-    return messages;
-}
-
 std::vector<PendingMessage> Storage::LoadPendingOnly(const std::string& client_name) {
     std::lock_guard<std::mutex> lock(db_mutex_);
     
@@ -262,63 +207,6 @@ std::vector<PendingMessage> Storage::LoadPendingOnly(const std::string& client_n
     return messages;
 }
 
-std::vector<PendingMessage> Storage::LoadPendingRepliesForSender(const std::string& sender_name) {
-    std::lock_guard<std::mutex> lock(db_mutex_);
-    
-    const char* sql = R"(
-        SELECT m.id, m.type, m.flags, m.correlation_id, m.sender, m.destination, m.payload
-        FROM messages m
-        INNER JOIN correlations c ON m.correlation_id = c.correlation_id
-        WHERE c.original_sender = ? 
-          AND m.status IN (?, ?)
-          AND m.type = ?
-        ORDER BY m.created_at ASC
-    )";
-    
-    sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    ThrowOnDbError(rc, "Failed to prepare select replies statement");
-    
-    sqlite3_bind_text(stmt, 1, sender_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, STATUS_PENDING);
-    sqlite3_bind_int(stmt, 3, STATUS_SENT);
-    sqlite3_bind_int(stmt, 4, static_cast<int>(MessageType::Reply));
-    
-    std::vector<PendingMessage> replies;
-    
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        PendingMessage pending;
-        pending.id = sqlite3_column_int64(stmt, 0);
-        
-        Message msg;
-        msg.SetType(static_cast<MessageType>(sqlite3_column_int(stmt, 1)));
-        msg.SetFlags(static_cast<uint8_t>(sqlite3_column_int(stmt, 2)));
-        msg.SetCorrelationId(sqlite3_column_int64(stmt, 3));
-        
-        const char* sender = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        if (sender) msg.SetSender(sender);
-        
-        const char* destination = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        if (destination) msg.SetDestination(destination);
-        
-        const void* blob = sqlite3_column_blob(stmt, 6);
-        int blob_size = sqlite3_column_bytes(stmt, 6);
-        if (blob && blob_size > 0) {
-            std::vector<uint8_t> payload(static_cast<const uint8_t*>(blob), 
-                                          static_cast<const uint8_t*>(blob) + blob_size);
-            msg.SetPayload(payload);
-        }
-        
-        pending.msg = std::move(msg);
-        replies.push_back(std::move(pending));
-    }
-    
-    sqlite3_finalize(stmt);
-    
-    spdlog::debug("Loaded {} pending replies for sender: {}", replies.size(), sender_name);
-    return replies;
-}
-
 void Storage::MarkDelivered(uint64_t message_id) {
     std::lock_guard<std::mutex> lock(db_mutex_);
     
@@ -345,7 +233,6 @@ void Storage::MarkDelivered(uint64_t message_id) {
 void Storage::MarkAckReceived(uint64_t message_id, const std::string& ack_sender) {
     std::lock_guard<std::mutex> lock(db_mutex_);
     
-    // Получаем original_sender для этого correlation
     const char* select_sql = R"(
         SELECT original_sender 
         FROM correlations 
@@ -370,7 +257,6 @@ void Storage::MarkAckReceived(uint64_t message_id, const std::string& ack_sender
     }
     sqlite3_finalize(select_stmt);
     
-    // Удаляем correlation ТОЛЬКО если ACK пришел от оригинального отправителя
     if (original_sender == ack_sender) {
         const char* del_sql = "DELETE FROM correlations WHERE message_id = ?";
         sqlite3_stmt* del_stmt;
@@ -533,48 +419,6 @@ uint64_t Storage::FindMessageIdByCorrelation(uint64_t correlation_id) {
     
     sqlite3_finalize(stmt);
     return message_id;
-}
-
-Message Storage::FindByCorrelation(uint64_t correlation_id) {
-    std::lock_guard<std::mutex> lock(db_mutex_);
-    
-    const char* sql = R"(
-        SELECT type, flags, correlation_id, sender, destination, payload
-        FROM messages
-        WHERE correlation_id = ? AND status = ?
-    )";
-    
-    sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    ThrowOnDbError(rc, "Failed to prepare find by correlation statement");
-    
-    sqlite3_bind_int64(stmt, 1, correlation_id);
-    sqlite3_bind_int(stmt, 2, STATUS_PENDING);
-    
-    Message msg;
-    
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        msg.SetType(static_cast<MessageType>(sqlite3_column_int(stmt, 0)));
-        msg.SetFlags(static_cast<uint8_t>(sqlite3_column_int(stmt, 1)));
-        msg.SetCorrelationId(sqlite3_column_int64(stmt, 2));
-        
-        const char* sender = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        if (sender) msg.SetSender(sender);
-        
-        const char* destination = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        if (destination) msg.SetDestination(destination);
-        
-        const void* blob = sqlite3_column_blob(stmt, 5);
-        int blob_size = sqlite3_column_bytes(stmt, 5);
-        if (blob && blob_size > 0) {
-            std::vector<uint8_t> payload(static_cast<const uint8_t*>(blob), 
-                                          static_cast<const uint8_t*>(blob) + blob_size);
-            msg.SetPayload(payload);
-        }
-    }
-    
-    sqlite3_finalize(stmt);
-    return msg;
 }
 
 uint64_t Storage::GetPendingCount(const std::string& client_name) {
@@ -784,7 +628,6 @@ std::vector<PendingMessage> Storage::LoadPendingRepliesForSenderOnly(const std::
 std::vector<PendingMessage> Storage::LoadPendingMessagesOnly(const std::string& client_name) {
     std::lock_guard<std::mutex> lock(db_mutex_);
     
-    // Загружаем ТОЛЬКО обычные сообщения (НЕ Reply), где клиент - получатель
     const char* sql = R"(
         SELECT id, type, flags, correlation_id, sender, destination, payload
         FROM messages

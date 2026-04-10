@@ -11,7 +11,6 @@
 #include "storage.hpp"
 #include "session.hpp"
 #include "zmq_session.hpp"
-#include "offline_queue.hpp"
 
 namespace broker {
 
@@ -27,7 +26,6 @@ public:
     
     std::shared_ptr<ZmqSession> FindSession(const std::string& name);
     
-    void HandleDisconnect(const zmq::message_t& identity);
     void DeliverOfflineMessages(const std::string& name);
     void DeliverPendingReplies(const std::string& name);
     
@@ -42,12 +40,10 @@ private:
     void HandleReply(const Message& msg);
     void HandleAck(const Message& msg);
     void HandleUnregister(const Message& msg, const zmq::message_t& identity);
-    std::shared_ptr<ZmqSession> FindSessionByIdentity(const zmq::message_t& identity);
     
     Storage& storage_;
     zmq::socket_t& router_socket_;
     Server& server_;
-    OfflineQueueManager offline_manager_;
     
     std::unordered_map<std::string, std::shared_ptr<ZmqSession>> active_clients_;
     std::unordered_map<std::string, std::string> identity_to_name_;

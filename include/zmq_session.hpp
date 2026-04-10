@@ -36,10 +36,6 @@ public:
         is_online_ = false; 
         spdlog::debug("Client {} marked as offline", name_);
     }
-    void MarkOnline() { 
-        is_online_ = true; 
-        spdlog::debug("Client {} marked as online", name_);
-    }
     
     void UpdateLastActivity() {
         last_activity_ = std::chrono::steady_clock::now();
@@ -53,15 +49,6 @@ public:
         last_heartbeat_ = std::chrono::steady_clock::now();
     }
     
-    std::chrono::steady_clock::time_point GetLastReceiveTime() const { return last_receive_; }
-    
-    bool IsTimedOut(int timeout_seconds) const {
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_activity_);
-        return elapsed.count() > timeout_seconds;
-    }
-    
-    bool CheckConnection();
     void PersistQueueToDatabase();
     
     void SetPersistCallback(std::function<void(const std::string&, const Message&)> callback) {
