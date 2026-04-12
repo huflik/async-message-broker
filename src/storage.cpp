@@ -152,61 +152,6 @@ uint64_t Storage::SaveMessageWithStatus(const Message& msg, int status) {
     return message_id;
 }
 
-std::vector<PendingMessage> Storage::LoadPendingOnly(const std::string& client_name) {
-    std::lock_guard<std::mutex> lock(db_mutex_);
-    
-    const char* sql = R"(
-        SELECT id, type, flags, correlation_id, sender, destination, payload
-        FROM messages
-        WHERE destination = ? AND status = ?
-        ORDER BY created_at ASC
-    )";
-    
-    sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK) {
-        spdlog::error("Failed to prepare select pending only statement: {}", sqlite3_errmsg(db_));
-        return {};
-    }
-    
-    sqlite3_bind_text(stmt, 1, client_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, STATUS_PENDING);
-    
-    std::vector<PendingMessage> messages;
-    
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        PendingMessage pending;
-        pending.id = sqlite3_column_int64(stmt, 0);
-        
-        Message msg;
-        msg.SetType(static_cast<MessageType>(sqlite3_column_int(stmt, 1)));
-        msg.SetFlags(static_cast<uint8_t>(sqlite3_column_int(stmt, 2)));
-        msg.SetCorrelationId(sqlite3_column_int64(stmt, 3));
-        
-        const char* sender = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        if (sender) msg.SetSender(sender);
-        
-        const char* destination = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        if (destination) msg.SetDestination(destination);
-        
-        const void* blob = sqlite3_column_blob(stmt, 6);
-        int blob_size = sqlite3_column_bytes(stmt, 6);
-        if (blob && blob_size > 0) {
-            std::vector<uint8_t> payload(static_cast<const uint8_t*>(blob), 
-                                          static_cast<const uint8_t*>(blob) + blob_size);
-            msg.SetPayload(payload);
-        }
-        
-        pending.msg = std::move(msg);
-        messages.push_back(std::move(pending));
-    }
-    
-    sqlite3_finalize(stmt);
-    
-    spdlog::debug("Loaded {} pending (status=PENDING) messages for client: {}", messages.size(), client_name);
-    return messages;
-}
-
 void Storage::MarkDelivered(uint64_t message_id) {
     std::lock_guard<std::mutex> lock(db_mutex_);
     
@@ -419,60 +364,6 @@ uint64_t Storage::FindMessageIdByCorrelation(uint64_t correlation_id) {
     
     sqlite3_finalize(stmt);
     return message_id;
-}
-
-uint64_t Storage::GetPendingCount(const std::string& client_name) {
-    std::lock_guard<std::mutex> lock(db_mutex_);
-    
-    const char* sql = "SELECT COUNT(*) FROM messages WHERE destination = ? AND status IN (?, ?)";
-    
-    sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    ThrowOnDbError(rc, "Failed to prepare count statement");
-    
-    sqlite3_bind_text(stmt, 1, client_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, STATUS_PENDING);
-    sqlite3_bind_int(stmt, 3, STATUS_SENT);
-    
-    uint64_t count = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        count = sqlite3_column_int64(stmt, 0);
-    }
-    
-    sqlite3_finalize(stmt);
-    return count;
-}
-
-void Storage::CleanupOldMessages(int days) {
-    std::lock_guard<std::mutex> lock(db_mutex_);
-    
-    const char* sql = R"(
-        DELETE FROM messages 
-        WHERE status = ? AND created_at < datetime('now', ?)
-    )";
-    
-    std::string date_modifier = "-" + std::to_string(days) + " days";
-    
-    sqlite3_stmt* stmt;
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    ThrowOnDbError(rc, "Failed to prepare cleanup statement");
-    
-    sqlite3_bind_int(stmt, 1, STATUS_DELIVERED);
-    sqlite3_bind_text(stmt, 2, date_modifier.c_str(), -1, SQLITE_TRANSIENT);
-    
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_DONE) {
-        sqlite3_finalize(stmt);
-        throw std::runtime_error("Failed to cleanup old messages: " + 
-                                 std::string(sqlite3_errmsg(db_)));
-    }
-    
-    int deleted = sqlite3_changes(db_);
-    sqlite3_finalize(stmt);
-    
-    if (deleted > 0) {
-        spdlog::info("Cleaned up {} old delivered messages", deleted);
-    }
 }
 
 std::vector<PendingMessage> Storage::LoadExpiredSent(int timeout_seconds) {

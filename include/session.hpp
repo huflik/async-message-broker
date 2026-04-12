@@ -2,25 +2,92 @@
 
 #include <memory>
 #include <string>
+#include <queue>
+#include <mutex>
+#include <chrono>
+#include <functional>
+#include <future>
 #include <zmq.hpp>
+
 #include "message.hpp"
+#include <spdlog/spdlog.h>
 
 namespace broker {
 
+class Server;
+
 class Session {
 public:
-    virtual ~Session() = default;
+    explicit Session(zmq::message_t identity, Server& server);
+    ~Session();
     
-    virtual bool SendMessage(const Message& msg) = 0;
-    virtual std::string GetName() const = 0;
-    virtual bool IsOnline() const = 0;
+    bool SendMessage(const Message& msg);
+    std::string GetName() const { return name_; }
+    bool IsOnline() const { return is_online_; }
     
-    virtual const zmq::message_t& GetIdentity() const = 0;
+    const zmq::message_t& GetIdentity() const { return identity_; }
     
-    virtual void SetName(const std::string& name) = 0;
-    virtual void EnqueueMessage(const Message& msg) = 0;
-    virtual void FlushQueue() = 0;
-    virtual void UpdateLastReceive() = 0;
+    void SetName(const std::string& name) { name_ = name; }
+    void FlushQueue();
+    
+    void MarkOffline() { 
+        is_online_ = false; 
+        spdlog::debug("Client {} marked as offline", name_);
+    }
+    
+    void MarkOnline() {
+        is_online_ = true;
+        spdlog::debug("Client {} marked as online", name_);
+    }
+    
+    void UpdateLastReceive() {
+        last_receive_ = std::chrono::steady_clock::now();
+        spdlog::trace("Client {} last receive updated", name_);
+    }
+    
+    void UpdateLastActivity() {
+        last_activity_ = std::chrono::steady_clock::now();
+        spdlog::trace("Client {} last activity updated", name_);
+    }
+    
+    bool IsExpired(int timeout_seconds) const {
+        if (!is_online_) return true;
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_receive_);
+        return elapsed.count() > timeout_seconds;
+    }
+    
+    void PersistQueueToDatabase();
+    
+    void SetPersistCallback(std::function<void(const std::string&, const Message&)> callback) {
+        persist_callback_ = std::move(callback);
+    }
+    
+    void SetSendCallback(std::function<void(zmq::message_t, zmq::message_t, 
+                                            std::function<void(bool)>)> callback) {
+        send_callback_ = std::move(callback);
+    }
+    
+    size_t GetQueueSize() const {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        return outgoing_queue_.size();
+    }
+
+private:
+    bool SendZmqMessage(const Message& msg);
+    void EnqueueMessage(const Message& msg);
+    
+    zmq::message_t identity_;
+    Server& server_;
+    std::string name_;
+    bool is_online_ = true;
+    std::queue<Message> outgoing_queue_;
+    mutable std::mutex queue_mutex_;
+    std::chrono::steady_clock::time_point last_receive_;
+    std::chrono::steady_clock::time_point last_activity_;
+    
+    std::function<void(zmq::message_t, zmq::message_t, std::function<void(bool)>)> send_callback_;
+    std::function<void(const std::string&, const Message&)> persist_callback_;
 };
 
 } // namespace broker

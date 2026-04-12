@@ -1,26 +1,25 @@
-#include "zmq_session.hpp"
+#include "session.hpp"
 #include "server.hpp"
 #include <cstring>
 #include <spdlog/spdlog.h>
 
 namespace broker {
 
-ZmqSession::ZmqSession(zmq::message_t identity, Server& server)
+Session::Session(zmq::message_t identity, Server& server)
     : identity_(std::move(identity))
     , server_(server)
-    , last_activity_(std::chrono::steady_clock::now())
     , last_receive_(std::chrono::steady_clock::now())
-    , last_heartbeat_(std::chrono::steady_clock::now())
+    , last_activity_(std::chrono::steady_clock::now())
 {
-    spdlog::debug("ZmqSession created for identity with size: {}", identity_.size());
+    spdlog::debug("Session created for identity with size: {}", identity_.size());
 }
 
-ZmqSession::~ZmqSession() {
+Session::~Session() {
     PersistQueueToDatabase();
-    spdlog::debug("ZmqSession destroyed for client: {}", name_);
+    spdlog::debug("Session destroyed for client: {}", name_);
 }
 
-void ZmqSession::PersistQueueToDatabase() {
+void Session::PersistQueueToDatabase() {
     if (!persist_callback_) {
         spdlog::debug("PersistQueueToDatabase: callback not set for {}", name_);
         return;
@@ -46,9 +45,8 @@ void ZmqSession::PersistQueueToDatabase() {
     spdlog::debug("Persisted {} messages for {}", persisted_count, name_);
 }
 
-bool ZmqSession::SendMessage(const Message& msg) {
+bool Session::SendMessage(const Message& msg) {
     UpdateLastActivity();
-    UpdateHeartbeat();
     
     if (!is_online_) {
         EnqueueMessage(msg);
@@ -59,7 +57,7 @@ bool ZmqSession::SendMessage(const Message& msg) {
     return SendZmqMessage(msg);
 }
 
-bool ZmqSession::SendZmqMessage(const Message& msg) {
+bool Session::SendZmqMessage(const Message& msg) {
     if (!send_callback_) {
         spdlog::error("Send callback not set for session {}", name_);
         return false;
@@ -73,37 +71,40 @@ bool ZmqSession::SendZmqMessage(const Message& msg) {
         
         zmq::message_t data(serialized.data(), serialized.size());
         
-        bool sent = false;
-        bool callback_called = false;
-        std::promise<bool> promise;
-        auto future = promise.get_future();
+        auto promise = std::make_shared<std::promise<bool>>();
+        std::weak_ptr<std::promise<bool>> weak_promise = promise;
+        std::shared_future<bool> future = promise->get_future();
         
         send_callback_(std::move(identity_copy), std::move(data), 
-                      [&promise, &sent, &callback_called, this](bool success) {
-                          sent = success;
-                          callback_called = true;
+                      [weak_promise, this](bool success) {
+                          auto p = weak_promise.lock();
+                          if (!p) {
+                              spdlog::debug("Promise already destroyed for {}, callback ignored", name_);
+                              return;
+                          }
+                          
                           if (!success) {
                               spdlog::warn("Send callback reported failure for {}", name_);
                               is_online_ = false;
                           }
-                          promise.set_value(success);
+                          p->set_value(success);
                       });
         
         auto status = future.wait_for(std::chrono::milliseconds(1000));
         if (status == std::future_status::timeout) {
             spdlog::warn("Send timeout for client {}, marking offline", name_);
             is_online_ = false;
+            
+            promise.reset();
+            
             return false;
         }
         
-        if (!callback_called) {
-            spdlog::error("Callback was not called for client {}", name_);
-            is_online_ = false;
-            return false;
-        }
+        bool sent = future.get();
         
         if (sent) {
             spdlog::debug("Message sent to client {}: {}", name_, msg.ToString());
+            UpdateLastReceive(); // Обновляем время получения после успешной отправки
         } else {
             spdlog::warn("Failed to send message to {}, marking offline", name_);
             is_online_ = false;
@@ -122,7 +123,7 @@ bool ZmqSession::SendZmqMessage(const Message& msg) {
     }
 }
 
-void ZmqSession::EnqueueMessage(const Message& msg) {
+void Session::EnqueueMessage(const Message& msg) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     outgoing_queue_.push(msg);
     spdlog::debug("Message queued for client {}, queue size: {}", name_, outgoing_queue_.size());
@@ -142,7 +143,7 @@ void ZmqSession::EnqueueMessage(const Message& msg) {
     }
 }
 
-void ZmqSession::FlushQueue() {
+void Session::FlushQueue() {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     
     spdlog::debug("Flushing queue for client {}, size: {}", name_, outgoing_queue_.size());

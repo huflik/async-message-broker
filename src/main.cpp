@@ -48,7 +48,6 @@ void PrintHelp(const char* program_name) {
               << "  --log-level LEVEL          Log level: trace, debug, info, warn, error (default: info)\n"
               << "  --session-timeout N        Session timeout in seconds (default: 60)\n"
               << "  --ack-timeout N            ACK timeout in seconds (default: 30)\n"
-              << "  --heartbeat-interval N     Heartbeat interval in seconds, 0=disabled (default: 0)\n"
               << "  --help                     Show this help message\n";
 }
 
@@ -59,7 +58,6 @@ struct CommandLineConfig {
     std::string log_level = "info";
     int session_timeout = 60;
     int ack_timeout = 30;
-    int heartbeat_interval = 0;
 };
 
 CommandLineConfig ParseArgs(int argc, char* argv[]) {
@@ -83,8 +81,6 @@ CommandLineConfig ParseArgs(int argc, char* argv[]) {
             config.session_timeout = std::stoi(argv[++i]);
         } else if (arg == "--ack-timeout" && i + 1 < argc) {
             config.ack_timeout = std::stoi(argv[++i]);
-        } else if (arg == "--heartbeat-interval" && i + 1 < argc) {
-            config.heartbeat_interval = std::stoi(argv[++i]);
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
             PrintHelp(argv[0]);
@@ -107,7 +103,7 @@ int main(int argc, char* argv[]) {
     spdlog::info("Starting Async Message Broker v1.0.0");
     spdlog::info("Configuration: port={}, db_path={}, threads={}, log_level={}, session_timeout={}s, ack_timeout={}s, heartbeat_interval={}s",
                  cmd_config.port, cmd_config.db_path, cmd_config.threads, cmd_config.log_level,
-                 cmd_config.session_timeout, cmd_config.ack_timeout, cmd_config.heartbeat_interval);
+                 cmd_config.session_timeout, cmd_config.ack_timeout);
     
     SetupSignalHandlers();
     
@@ -118,7 +114,6 @@ int main(int argc, char* argv[]) {
     broker_config.LogLevel = cmd_config.log_level;
     broker_config.SessionTimeout = cmd_config.session_timeout;
     broker_config.AckTimeout = cmd_config.ack_timeout;
-    broker_config.HeartbeatInterval = cmd_config.heartbeat_interval;
     
     broker::Server server(broker_config);
     

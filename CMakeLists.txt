@@ -44,10 +44,8 @@ set(SOURCES
     src/server.cpp
     src/message.cpp
     src/router.cpp
-    src/zmq_session.cpp
+    src/session.cpp
     src/storage.cpp
-    src/offline_queue.cpp
-    src/metrics.cpp
 )
 
 add_executable(broker ${SOURCES})

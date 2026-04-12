@@ -17,6 +17,26 @@ Router::Router(Storage& storage, zmq::socket_t& router_socket, Server& server)
 void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
     spdlog::debug("Routing message: {}", msg.ToString());
     
+    // Находим сессию один раз
+    std::shared_ptr<Session> session;
+    {
+        std::lock_guard<std::mutex> lock(registry_mutex_);
+        std::string identity_str(
+            reinterpret_cast<const char*>(identity.data()),
+            identity.size()
+        );
+        
+        auto it = identity_to_name_.find(identity_str);
+        if (it != identity_to_name_.end()) {
+            auto session_it = active_clients_.find(it->second);
+            if (session_it != active_clients_.end()) {
+                session = session_it->second;
+                session->UpdateLastReceive();
+                spdlog::trace("Updated last_receive for client: {}", it->second);
+            }
+        }
+    }
+    
     switch (msg.GetType()) {
         case MessageType::Register:
             HandleRegister(msg, identity);
@@ -73,11 +93,10 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
     zmq::message_t identity_copy(identity.size());
     std::memcpy(identity_copy.data(), identity.data(), identity.size());
     
-    auto session = std::make_shared<ZmqSession>(std::move(identity_copy), server_);
+    auto session = std::make_shared<Session>(std::move(identity_copy), server_);
     session->SetName(client_name);
     session->UpdateLastActivity();
     session->UpdateLastReceive();
-    session->UpdateHeartbeat();
     
     session->SetSendCallback([this](zmq::message_t identity, zmq::message_t data, 
                                      std::function<void(bool)> callback) {
@@ -136,7 +155,7 @@ void Router::HandleMessage(const Message& msg) {
                       msg.GetCorrelationId(), msg.GetSender());
     }
     
-    std::shared_ptr<ZmqSession> session;
+    std::shared_ptr<Session> session;
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         auto it = active_clients_.find(destination);
@@ -148,7 +167,6 @@ void Router::HandleMessage(const Message& msg) {
     bool can_deliver = false;
     if (session) {
         session->UpdateLastReceive();
-        session->UpdateHeartbeat();
         
         if (session->IsOnline()) {
             can_deliver = true;
@@ -205,7 +223,7 @@ void Router::HandleReply(const Message& msg) {
     spdlog::debug("Saved correlation for reply: message_id={}, corr_id={}, owner={}", 
                   message_id, msg.GetCorrelationId(), correlation_owner);
     
-    std::shared_ptr<ZmqSession> session;
+    std::shared_ptr<Session> session;
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         auto it = active_clients_.find(destination);
@@ -271,7 +289,7 @@ void Router::HandleAck(const Message& msg) {
     }
 }
 
-bool Router::RegisterClient(const std::string& name, std::shared_ptr<ZmqSession> session) {
+bool Router::RegisterClient(const std::string& name, std::shared_ptr<Session> session) {
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
     if (active_clients_.find(name) != active_clients_.end()) {
@@ -292,23 +310,7 @@ bool Router::RegisterClient(const std::string& name, std::shared_ptr<ZmqSession>
     return true;
 }
 
-void Router::UnregisterClient(const std::string& name) {
-    std::lock_guard<std::mutex> lock(registry_mutex_);
-    
-    auto it = active_clients_.find(name);
-    if (it != active_clients_.end()) {
-        const auto& identity = it->second->GetIdentity();
-        std::string identity_str(
-            reinterpret_cast<const char*>(identity.data()),
-            identity.size()
-        );
-        identity_to_name_.erase(identity_str);
-        active_clients_.erase(it);
-        spdlog::info("Client unregistered: {}", name);
-    }
-}
-
-std::shared_ptr<ZmqSession> Router::FindSession(const std::string& name) {
+std::shared_ptr<Session> Router::FindSession(const std::string& name) {
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
     auto it = active_clients_.find(name);
@@ -319,7 +321,7 @@ std::shared_ptr<ZmqSession> Router::FindSession(const std::string& name) {
 }
 
 void Router::DeliverOfflineMessages(const std::string& name) {
-    std::shared_ptr<ZmqSession> session;
+    std::shared_ptr<Session> session;
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         auto it = active_clients_.find(name);
@@ -344,7 +346,6 @@ void Router::DeliverOfflineMessages(const std::string& name) {
     
     session->UpdateLastActivity();
     session->UpdateLastReceive();
-    session->UpdateHeartbeat();
     
     for (const auto& pending : pending_messages) {
         if (!session->IsOnline()) {
@@ -375,7 +376,7 @@ void Router::DeliverOfflineMessages(const std::string& name) {
 void Router::DeliverPendingReplies(const std::string& name) {
     spdlog::debug("DeliverPendingReplies called for client: {}", name);
     
-    std::shared_ptr<ZmqSession> session;
+    std::shared_ptr<Session> session;
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         auto it = active_clients_.find(name);
@@ -400,7 +401,6 @@ void Router::DeliverPendingReplies(const std::string& name) {
     
     session->UpdateLastActivity();
     session->UpdateLastReceive();
-    session->UpdateHeartbeat();
     
     for (const auto& reply : pending_replies) {
         if (!session->IsOnline()) {
@@ -447,9 +447,21 @@ void Router::CleanupInactiveSessions() {
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
     std::vector<std::string> to_remove;
+    int timeout = server_.GetConfig().SessionTimeout;
     
     for (const auto& [name, session] : active_clients_) {
+        bool should_remove = false;
+        
         if (!session->IsOnline()) {
+            should_remove = true;
+        } else if (timeout > 0 && session->IsExpired(timeout)) {
+            spdlog::info("Client {} inactive for {}s, marking as offline", name, timeout);
+            session->MarkOffline();
+            session->PersistQueueToDatabase();
+            should_remove = true;
+        }
+        
+        if (should_remove) {
             to_remove.push_back(name);
         }
     }
@@ -457,8 +469,6 @@ void Router::CleanupInactiveSessions() {
     for (const auto& name : to_remove) {
         auto it = active_clients_.find(name);
         if (it != active_clients_.end()) {
-            it->second->PersistQueueToDatabase();
-            
             const auto& identity = it->second->GetIdentity();
             std::string identity_str(
                 reinterpret_cast<const char*>(identity.data()),
@@ -466,12 +476,12 @@ void Router::CleanupInactiveSessions() {
             );
             identity_to_name_.erase(identity_str);
             active_clients_.erase(it);
-            spdlog::debug("Cleaned up offline session for: {}", name);
+            spdlog::debug("Cleaned up session for: {}", name);
         }
     }
     
     if (!to_remove.empty()) {
-        spdlog::info("Cleaned up {} offline sessions", to_remove.size());
+        spdlog::info("Cleaned up {} inactive sessions", to_remove.size());
     }
 }
 
@@ -486,7 +496,7 @@ void Router::CheckExpiredAcks() {
         
         storage_.MarkPending(pending.id);
         
-        std::shared_ptr<ZmqSession> session;
+        std::shared_ptr<Session> session;
         std::string destination = pending.msg.GetDestination();
         
         {

@@ -10,7 +10,7 @@
 #include "message.hpp"
 #include "storage.hpp"
 #include "session.hpp"
-#include "zmq_session.hpp"
+#include "session.hpp"
 
 namespace broker {
 
@@ -21,10 +21,9 @@ public:
     Router(Storage& storage, zmq::socket_t& router_socket, Server& server);
     
     void RouteMessage(const Message& msg, const zmq::message_t& identity);
-    bool RegisterClient(const std::string& name, std::shared_ptr<ZmqSession> session);
-    void UnregisterClient(const std::string& name);
+    bool RegisterClient(const std::string& name, std::shared_ptr<Session> session);
     
-    std::shared_ptr<ZmqSession> FindSession(const std::string& name);
+    std::shared_ptr<Session> FindSession(const std::string& name);
     
     void DeliverOfflineMessages(const std::string& name);
     void DeliverPendingReplies(const std::string& name);
@@ -45,7 +44,7 @@ private:
     zmq::socket_t& router_socket_;
     Server& server_;
     
-    std::unordered_map<std::string, std::shared_ptr<ZmqSession>> active_clients_;
+    std::unordered_map<std::string, std::shared_ptr<Session>> active_clients_;
     std::unordered_map<std::string, std::string> identity_to_name_;
     std::mutex registry_mutex_;
     

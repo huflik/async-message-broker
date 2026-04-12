@@ -38,17 +38,6 @@ public:
     uint64_t SaveMessage(const Message& msg);
     
     /**
-     * Сохраняет сообщение с указанным статусом
-     */
-    uint64_t SaveMessageWithStatus(const Message& msg, int status);
-    
-    /**
-     * Загружает только сообщения со статусом PENDING (не SENT)
-     * @deprecated Используйте LoadPendingMessagesOnly для обычных сообщений
-     */
-    std::vector<PendingMessage> LoadPendingOnly(const std::string& client_name);
-    
-    /**
      * Помечает сообщение как доставленное (получен ACK)
      */
     void MarkDelivered(uint64_t message_id);
@@ -79,16 +68,6 @@ public:
      * @return message_id или 0 если не найден
      */
     uint64_t FindMessageIdByCorrelation(uint64_t correlation_id);
-    
-    /**
-     * Получает количество отложенных сообщений для клиента
-     */
-    uint64_t GetPendingCount(const std::string& client_name);
-    
-    /**
-     * Очищает старые доставленные сообщения
-     */
-    void CleanupOldMessages(int days = 7);
 
     /**
      * Загружает сообщения со статусом SENT, отправленные давнее timeout секунд
@@ -127,6 +106,7 @@ public:
 private:
     void CreateTables();
     void ThrowOnDbError(int rc, const std::string& msg);
+    uint64_t SaveMessageWithStatus(const Message& msg, int status);   
     
     sqlite3* db_ = nullptr;
     std::string db_path_;
