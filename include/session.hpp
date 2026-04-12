@@ -1,3 +1,4 @@
+// session.hpp
 #pragma once
 
 #include <memory>
@@ -10,15 +11,21 @@
 #include <zmq.hpp>
 
 #include "message.hpp"
+#include "interfaces.hpp"  // ДОБАВИТЬ эту строку
 #include <spdlog/spdlog.h>
 
 namespace broker {
 
-class Server;
+// Удаляем forward declaration of Server (больше не нужен)
+// class Server;  // УДАЛИТЬ эту строку
 
 class Session {
 public:
-    explicit Session(zmq::message_t identity, Server& server);
+    // ИЗМЕНИТЬ: вместо Server используем интерфейсы
+    explicit Session(zmq::message_t identity, 
+                     IMessageSender& message_sender,
+                     const Config& config);
+    
     ~Session();
     
     bool SendMessage(const Message& msg);
@@ -59,14 +66,13 @@ public:
     
     void PersistQueueToDatabase();
     
+    // ИЗМЕНИТЬ: сигнатура колбэка теперь принимает IStorage* или функцию
     void SetPersistCallback(std::function<void(const std::string&, const Message&)> callback) {
         persist_callback_ = std::move(callback);
     }
     
-    void SetSendCallback(std::function<void(zmq::message_t, zmq::message_t, 
-                                            std::function<void(bool)>)> callback) {
-        send_callback_ = std::move(callback);
-    }
+    // ИЗМЕНИТЬ: больше не нужен отдельный send_callback, используем IMessageSender
+    // Удаляем метод SetSendCallback
     
     size_t GetQueueSize() const {
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -78,7 +84,11 @@ private:
     void EnqueueMessage(const Message& msg);
     
     zmq::message_t identity_;
-    Server& server_;
+    
+    // ИЗМЕНИТЬ: вместо server_ используем интерфейсы
+    IMessageSender& message_sender_;  // Для отправки сообщений
+    const Config& config_;             // Для доступа к конфигурации
+    
     std::string name_;
     bool is_online_ = true;
     std::queue<Message> outgoing_queue_;
@@ -86,7 +96,9 @@ private:
     std::chrono::steady_clock::time_point last_receive_;
     std::chrono::steady_clock::time_point last_activity_;
     
-    std::function<void(zmq::message_t, zmq::message_t, std::function<void(bool)>)> send_callback_;
+    // УДАЛИТЬ: больше не нужен send_callback_, так как используем message_sender_
+    // std::function<void(zmq::message_t, zmq::message_t, std::function<void(bool)>)> send_callback_;
+    
     std::function<void(const std::string&, const Message&)> persist_callback_;
 };
 

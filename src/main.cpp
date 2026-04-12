@@ -7,6 +7,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 
 #include "server.hpp"
+#include "config.hpp"
 
 std::atomic<bool> running{true};
 

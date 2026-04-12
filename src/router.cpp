@@ -1,17 +1,21 @@
+// router.cpp
 #include "router.hpp"
-#include "server.hpp"
+#include "server.hpp"  // УДАЛИТЬ эту строку (больше не нужен)
 #include <cstring>
 #include <spdlog/spdlog.h>
 
 namespace broker {
 
-Router::Router(Storage& storage, zmq::socket_t& router_socket, Server& server)
+// ИЗМЕНИТЬ: конструктор
+Router::Router(IStorage& storage, 
+               IMessageSender& message_sender,
+               IConfigProvider& config_provider)
     : storage_(storage)
-    , router_socket_(router_socket)
-    , server_(server)
-    , ack_timeout_seconds_(server.GetConfig().AckTimeout)
+    , message_sender_(message_sender)
+    , config_provider_(config_provider)
 {
-    spdlog::info("Router initialized with ACK timeout: {}s", ack_timeout_seconds_);
+    int ack_timeout = config_provider_.GetConfig().AckTimeout;
+    spdlog::info("Router initialized with ACK timeout: {}s", ack_timeout);
 }
 
 void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
@@ -93,16 +97,20 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
     zmq::message_t identity_copy(identity.size());
     std::memcpy(identity_copy.data(), identity.data(), identity.size());
     
-    auto session = std::make_shared<Session>(std::move(identity_copy), server_);
+    // ИЗМЕНИТЬ: создаем Session с интерфейсами
+    auto session = std::make_shared<Session>(
+        std::move(identity_copy),
+        message_sender_,                    // Передаем IMessageSender
+        config_provider_.GetConfig()       // Передаем Config
+    );
+    
     session->SetName(client_name);
     session->UpdateLastActivity();
     session->UpdateLastReceive();
     
-    session->SetSendCallback([this](zmq::message_t identity, zmq::message_t data, 
-                                     std::function<void(bool)> callback) {
-        server_.SendMessage(std::move(identity), std::move(data), std::move(callback));
-    });
+    // УДАЛИТЬ: больше не нужен SetSendCallback, Session сам использует message_sender_
     
+    // Установка колбэка для персистенции
     session->SetPersistCallback([this](const std::string& client_name, const Message& msg) {
         PersistMessageForClient(client_name, msg);
     });
@@ -310,6 +318,22 @@ bool Router::RegisterClient(const std::string& name, std::shared_ptr<Session> se
     return true;
 }
 
+void Router::UnregisterClient(const std::string& name) {
+    std::lock_guard<std::mutex> lock(registry_mutex_);
+    
+    auto it = active_clients_.find(name);
+    if (it != active_clients_.end()) {
+        const auto& identity = it->second->GetIdentity();
+        std::string identity_str(
+            reinterpret_cast<const char*>(identity.data()),
+            identity.size()
+        );
+        identity_to_name_.erase(identity_str);
+        active_clients_.erase(it);
+        spdlog::debug("Client unregistered: {}", name);
+    }
+}
+
 std::shared_ptr<Session> Router::FindSession(const std::string& name) {
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
@@ -447,7 +471,7 @@ void Router::CleanupInactiveSessions() {
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
     std::vector<std::string> to_remove;
-    int timeout = server_.GetConfig().SessionTimeout;
+    int timeout = config_provider_.GetConfig().SessionTimeout;  // ИЗМЕНИТЬ: через config_provider_
     
     for (const auto& [name, session] : active_clients_) {
         bool should_remove = false;
@@ -486,13 +510,15 @@ void Router::CleanupInactiveSessions() {
 }
 
 void Router::CheckExpiredAcks() {
-    if (ack_timeout_seconds_ <= 0) return;
+    int ack_timeout_seconds = config_provider_.GetConfig().AckTimeout;  // ИЗМЕНИТЬ: через config_provider_
     
-    auto expired_messages = storage_.LoadExpiredSent(ack_timeout_seconds_);
+    if (ack_timeout_seconds <= 0) return;
+    
+    auto expired_messages = storage_.LoadExpiredSent(ack_timeout_seconds);
     
     for (const auto& pending : expired_messages) {
         spdlog::warn("Message {} expired (no ACK received after {} seconds), resetting to PENDING", 
-                     pending.id, ack_timeout_seconds_);
+                     pending.id, ack_timeout_seconds);
         
         storage_.MarkPending(pending.id);
         

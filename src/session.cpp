@@ -1,13 +1,18 @@
+// session.cpp
 #include "session.hpp"
-#include "server.hpp"
+#include "server.hpp"  // УДАЛИТЬ эту строку (больше не нужен)
 #include <cstring>
 #include <spdlog/spdlog.h>
 
 namespace broker {
 
-Session::Session(zmq::message_t identity, Server& server)
+// ИЗМЕНИТЬ: конструктор
+Session::Session(zmq::message_t identity, 
+                 IMessageSender& message_sender,
+                 const Config& config)
     : identity_(std::move(identity))
-    , server_(server)
+    , message_sender_(message_sender)
+    , config_(config)
     , last_receive_(std::chrono::steady_clock::now())
     , last_activity_(std::chrono::steady_clock::now())
 {
@@ -57,12 +62,8 @@ bool Session::SendMessage(const Message& msg) {
     return SendZmqMessage(msg);
 }
 
+// ИЗМЕНИТЬ: полностью переписать SendZmqMessage, убрав зависимость от send_callback_
 bool Session::SendZmqMessage(const Message& msg) {
-    if (!send_callback_) {
-        spdlog::error("Send callback not set for session {}", name_);
-        return false;
-    }
-    
     try {
         auto serialized = msg.Serialize();
         
@@ -71,32 +72,33 @@ bool Session::SendZmqMessage(const Message& msg) {
         
         zmq::message_t data(serialized.data(), serialized.size());
         
+        // Используем promise/future для синхронного ожидания
         auto promise = std::make_shared<std::promise<bool>>();
         std::weak_ptr<std::promise<bool>> weak_promise = promise;
         std::shared_future<bool> future = promise->get_future();
         
-        send_callback_(std::move(identity_copy), std::move(data), 
-                      [weak_promise, this](bool success) {
-                          auto p = weak_promise.lock();
-                          if (!p) {
-                              spdlog::debug("Promise already destroyed for {}, callback ignored", name_);
-                              return;
-                          }
-                          
-                          if (!success) {
-                              spdlog::warn("Send callback reported failure for {}", name_);
-                              is_online_ = false;
-                          }
-                          p->set_value(success);
-                      });
+        // Используем IMessageSender напрямую
+        message_sender_.SendToClient(std::move(identity_copy), std::move(data), 
+            [weak_promise, this](bool success) {
+                auto p = weak_promise.lock();
+                if (!p) {
+                    spdlog::debug("Promise already destroyed for {}, callback ignored", name_);
+                    return;
+                }
+                
+                if (!success) {
+                    spdlog::warn("Send callback reported failure for {}", name_);
+                    is_online_ = false;
+                }
+                p->set_value(success);
+            });
         
+        // Ждем результат с таймаутом
         auto status = future.wait_for(std::chrono::milliseconds(1000));
         if (status == std::future_status::timeout) {
             spdlog::warn("Send timeout for client {}, marking offline", name_);
             is_online_ = false;
-            
-            promise.reset();
-            
+            promise.reset();  // Разрушаем promise, чтобы callback не вызвал set_value
             return false;
         }
         
@@ -104,7 +106,7 @@ bool Session::SendZmqMessage(const Message& msg) {
         
         if (sent) {
             spdlog::debug("Message sent to client {}: {}", name_, msg.ToString());
-            UpdateLastReceive(); // Обновляем время получения после успешной отправки
+            UpdateLastReceive();
         } else {
             spdlog::warn("Failed to send message to {}, marking offline", name_);
             is_online_ = false;

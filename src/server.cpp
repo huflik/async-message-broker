@@ -1,3 +1,4 @@
+// server.cpp
 #include "server.hpp"
 #include <spdlog/spdlog.h>
 #include <fcntl.h>
@@ -12,11 +13,17 @@ Server::Server(const Config& config)
     , router_socket_(zmq_context_, zmq::socket_type::router)
 {
     spdlog::info("Initializing server...");
-    spdlog::info("Configuration: session_timeout={}s, ack_timeout={}s, heartbeat_interval={}s",
-                 config_.SessionTimeout, config_.AckTimeout, config_.HeartbeatInterval);
+    spdlog::info("Configuration: session_timeout={}s, ack_timeout={}s",
+                 config_.SessionTimeout, config_.AckTimeout);
     
     storage_ = std::make_unique<Storage>(config_.DbPath);
-    router_ = std::make_unique<Router>(*storage_, router_socket_, *this);
+    
+    // ИЗМЕНИТЬ: передаем this как IMessageSender и IConfigProvider
+    router_ = std::make_unique<Router>(
+        *storage_,      // IStorage&
+        *this,          // IMessageSender&
+        *this           // IConfigProvider&
+    );
     
     SetupZmqSocket();
     SetupAsioIntegration();
@@ -36,14 +43,7 @@ void Server::SetupZmqSocket() {
     router_socket_.set(zmq::sockopt::tcp_keepalive, 1);
     router_socket_.set(zmq::sockopt::tcp_keepalive_idle, 5);
     router_socket_.set(zmq::sockopt::tcp_keepalive_intvl, 2);
-    router_socket_.set(zmq::sockopt::tcp_keepalive_cnt, 2);
-    
-    if (config_.HeartbeatInterval > 0) {
-        router_socket_.set(zmq::sockopt::heartbeat_ivl, config_.HeartbeatInterval * 1000);
-        router_socket_.set(zmq::sockopt::heartbeat_timeout, config_.HeartbeatInterval * 3 * 1000);
-        router_socket_.set(zmq::sockopt::heartbeat_ttl, config_.HeartbeatInterval * 1000);
-        spdlog::debug("ZMQ heartbeat configured: ivl={}s", config_.HeartbeatInterval);
-    }
+    router_socket_.set(zmq::sockopt::tcp_keepalive_cnt, 2);   
     
     spdlog::debug("TCP keepalive configured: idle=5s, interval=2s, count=2");
     
@@ -213,8 +213,10 @@ void Server::ScheduleSendProcessing() {
     });
 }
 
-void Server::SendMessage(zmq::message_t identity, zmq::message_t data, 
-                         std::function<void(bool)> callback) {
+// ИЗМЕНИТЬ: реализация IMessageSender
+void Server::SendToClient(zmq::message_t identity, 
+                          zmq::message_t data,
+                          std::function<void(bool)> callback) {
     {
         std::lock_guard<std::mutex> lock(pending_sends_mutex_);
         pending_sends_.emplace(std::move(identity), std::move(data), std::move(callback));

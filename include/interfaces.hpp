@@ -1,7 +1,7 @@
-// interfaces.hpp
 #pragma once
 
 #include "message.hpp"
+#include "config.hpp"
 #include <memory>
 #include <functional>
 #include <string>
@@ -13,7 +13,7 @@ namespace broker {
 // Forward declarations
 class Session;
 struct PendingMessage;
-struct Config;
+
 
 // ============================================================================
 // Интерфейс для работы с хранилищем (Storage)

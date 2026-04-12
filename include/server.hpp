@@ -1,3 +1,4 @@
+// server.hpp
 #pragma once
 
 #include <atomic>
@@ -12,22 +13,14 @@
 #include <boost/asio/posix/stream_descriptor.hpp>
 #include <boost/asio/steady_timer.hpp>
 
+#include "config.hpp"        // ДОБАВИТЬ
+#include "interfaces.hpp"    // ДОБАВИТЬ
 #include "router.hpp"
 #include "storage.hpp"
 
 namespace broker {
 
-struct Config {
-    int Port = 5555;
-    std::string DbPath = "./broker.db";
-    int Threads = 0;
-    std::string LogLevel = "info";
-    
-    // Таймауты (в секундах)
-    int SessionTimeout = 60;      // Таймаут неактивной сессии (для fallback)
-    int AckTimeout = 30;           // Таймаут ожидания ACK
-    int HeartbeatInterval = 0;     // Интервал проверки heartbeat (0 = отключено)
-};
+// Удаляем struct Config из этого файла (теперь он в config.hpp)
 
 struct PendingSend {
     zmq::message_t identity;
@@ -44,7 +37,8 @@ struct PendingSend {
     PendingSend& operator=(PendingSend&&) = default;
 };
 
-class Server {
+// ДОБАВИТЬ: Server теперь реализует интерфейсы
+class Server : public IMessageSender, public IConfigProvider {
 public:
     explicit Server(const Config& config);
     ~Server();
@@ -52,10 +46,19 @@ public:
     void Run();
     void Stop();
     
-    void SendMessage(zmq::message_t identity, zmq::message_t data, 
-                     std::function<void(bool)> callback = nullptr);
+    // Реализация IMessageSender
+    void SendToClient(zmq::message_t identity, 
+                      zmq::message_t data,
+                      std::function<void(bool)> callback = nullptr) override;
     
-    const Config& GetConfig() const { return config_; }
+    // Реализация IConfigProvider
+    const Config& GetConfig() const override { return config_; }
+    
+    // Для обратной совместимости (можно удалить после рефакторинга)
+    void SendMessage(zmq::message_t identity, zmq::message_t data, 
+                     std::function<void(bool)> callback = nullptr) {
+        SendToClient(std::move(identity), std::move(data), std::move(callback));
+    }
 
 private:
     void SetupZmqSocket();
