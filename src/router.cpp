@@ -1,12 +1,11 @@
 // router.cpp
 #include "router.hpp"
-#include "server.hpp"  // УДАЛИТЬ эту строку (больше не нужен)
+#include "message_handler.hpp"
 #include <cstring>
 #include <spdlog/spdlog.h>
 
 namespace broker {
 
-// ИЗМЕНИТЬ: конструктор
 Router::Router(IStorage& storage, 
                IMessageSender& message_sender,
                IConfigProvider& config_provider)
@@ -41,25 +40,21 @@ void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
         }
     }
     
-    switch (msg.GetType()) {
-        case MessageType::Register:
-            HandleRegister(msg, identity);
-            break;
-        case MessageType::Message:
-            HandleMessage(msg);
-            break;
-        case MessageType::Reply:
-            HandleReply(msg);
-            break;
-        case MessageType::Ack:
-            HandleAck(msg);
-            break;
-        case MessageType::Unregister:
-            HandleUnregister(msg, identity);
-            break;
-        default:
-            spdlog::warn("Unknown message type: {}", static_cast<int>(msg.GetType()));
-            break;
+    // Создаем контекст для обработчика
+    HandlerContext ctx{
+        .storage = storage_,
+        .session_manager = *this,
+        .message_sender = message_sender_,
+        .config_provider = config_provider_,
+        .identity = identity
+    };
+    
+    // Создаем и вызываем соответствующий обработчик
+    auto handler = MessageHandlerFactory::Create(msg.GetType());
+    if (handler) {
+        handler->Handle(msg, ctx);
+    } else {
+        spdlog::warn("Unknown message type: {}", static_cast<int>(msg.GetType()));
     }
 }
 
@@ -97,20 +92,16 @@ void Router::HandleRegister(const Message& msg, const zmq::message_t& identity) 
     zmq::message_t identity_copy(identity.size());
     std::memcpy(identity_copy.data(), identity.data(), identity.size());
     
-    // ИЗМЕНИТЬ: создаем Session с интерфейсами
     auto session = std::make_shared<Session>(
         std::move(identity_copy),
-        message_sender_,                    // Передаем IMessageSender
-        config_provider_.GetConfig()       // Передаем Config
+        message_sender_,
+        config_provider_.GetConfig()
     );
     
     session->SetName(client_name);
     session->UpdateLastActivity();
     session->UpdateLastReceive();
     
-    // УДАЛИТЬ: больше не нужен SetSendCallback, Session сам использует message_sender_
-    
-    // Установка колбэка для персистенции
     session->SetPersistCallback([this](const std::string& client_name, const Message& msg) {
         PersistMessageForClient(client_name, msg);
     });
@@ -471,7 +462,7 @@ void Router::CleanupInactiveSessions() {
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
     std::vector<std::string> to_remove;
-    int timeout = config_provider_.GetConfig().SessionTimeout;  // ИЗМЕНИТЬ: через config_provider_
+    int timeout = config_provider_.GetConfig().SessionTimeout;
     
     for (const auto& [name, session] : active_clients_) {
         bool should_remove = false;
@@ -510,7 +501,7 @@ void Router::CleanupInactiveSessions() {
 }
 
 void Router::CheckExpiredAcks() {
-    int ack_timeout_seconds = config_provider_.GetConfig().AckTimeout;  // ИЗМЕНИТЬ: через config_provider_
+    int ack_timeout_seconds = config_provider_.GetConfig().AckTimeout;
     
     if (ack_timeout_seconds <= 0) return;
     

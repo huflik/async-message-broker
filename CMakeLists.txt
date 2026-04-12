@@ -46,6 +46,7 @@ set(SOURCES
     src/router.cpp
     src/session.cpp
     src/storage.cpp
+    src/message_handler.cpp
 )
 
 add_executable(broker ${SOURCES})
