@@ -71,81 +71,321 @@
 ## 📊 Диаграмма классов
 ```mermaid
 classDiagram
+    %% ========== ИНТЕРФЕЙСЫ ==========
+    class IStorage {
+        <<interface>>
+        +SaveMessage(Message) uint64_t
+        +MarkDelivered(uint64_t)
+        +MarkSent(uint64_t)
+        +NeedsAck(uint64_t) bool
+        +MarkPending(uint64_t)
+        +SaveCorrelation(uint64_t, uint64_t, string)
+        +FindOriginalSenderByCorrelation(uint64_t) string
+        +FindMessageIdByCorrelation(uint64_t) uint64_t
+        +FindMessageIdByCorrelationAndDestination(uint64_t, string) uint64_t
+        +MarkAckReceived(uint64_t, string)
+        +LoadExpiredSent(int) vector~PendingMessage~
+        +LoadPendingRepliesForSenderOnly(string) vector~PendingMessage~
+        +LoadPendingMessagesOnly(string) vector~PendingMessage~
+    }
+    
+    class IMessageSender {
+        <<interface>>
+        +SendToClient(zmq::message_t, zmq::message_t, callback)
+    }
+    
+    class IConfigProvider {
+        <<interface>>
+        +GetConfig() Config
+    }
+    
+    class ISessionManager {
+        <<interface>>
+        +FindSession(string) shared_ptr~Session~
+        +RegisterClient(string, shared_ptr~Session~) bool
+        +UnregisterClient(string)
+        +PrintActiveClients()
+        +CleanupInactiveSessions()
+        +DeliverOfflineMessages(string)
+        +DeliverPendingReplies(string)
+        +PersistMessageForClient(string, Message)
+        +CheckExpiredAcks()
+    }
+    
+    class IMessageHandler {
+        <<interface>>
+        +Handle(Message, HandlerContext)
+    }
+    
+    %% ========== КОНТЕКСТЫ И СТРУКТУРЫ ==========
+    class HandlerContext {
+        <<struct>>
+        +IStorage& storage
+        +ISessionManager& session_manager
+        +IMessageSender& message_sender
+        +IConfigProvider& config_provider
+        +zmq::message_t& identity
+    }
+    
+    class Config {
+        <<struct>>
+        +int Port
+        +string DbPath
+        +int Threads
+        +string LogLevel
+        +int SessionTimeout
+        +int AckTimeout
+    }
+    
+    class PendingMessage {
+        <<struct>>
+        +uint64_t id
+        +Message msg
+    }
+    
+    class PendingSend {
+        <<struct>>
+        +zmq::message_t identity
+        +zmq::message_t data
+        +function~void(bool)~ callback
+    }
+    
+    %% ========== ОСНОВНЫЕ КЛАССЫ ==========
     class Server {
-        -io_context io_context_
+        -Config config_
+        -atomic~bool~ running_
+        -zmq::context_t zmq_context_
         -zmq::socket_t router_socket_
-        -Router router_
-        -Storage storage_
-        +run()
-        -handle_zmq_events()
+        -io_context io_context_
+        -unique_ptr~work~ work_guard_
+        -vector~thread~ threads_
+        -unique_ptr~stream_descriptor~ zmq_fd_
+        -unique_ptr~steady_timer~ cleanup_timer_
+        -unique_ptr~steady_timer~ ack_timeout_timer_
+        -unique_ptr~Router~ router_
+        -unique_ptr~Storage~ storage_
+        -queue~PendingSend~ pending_sends_
+        -mutex pending_sends_mutex_
+        -atomic~bool~ sending_in_progress_
+        +Server(Config)
+        +Run()
+        +Stop()
+        +SendToClient(zmq::message_t, zmq::message_t, callback)
+        +GetConfig() Config
+        -SetupZmqSocket()
+        -SetupAsioIntegration()
+        -OnZmqEvent(error_code)
+        -AsioThread()
+        -SetupCleanupTimer()
+        -SetupAckTimeoutTimer()
+        -ProcessPendingSends()
+        -ScheduleSendProcessing()
     }
     
     class Router {
-        -map~string, weak_ptr~Session~~ active_clients_
-        -CorrelationEngine correlation_engine_
-        -OfflineQueueManager offline_manager_
-        +register_client(string name, Session session)
-        +unregister_client(string name)
-        +route_message(Message msg)
-        +deliver_offline_messages(string name)
-    }
-    
-    class Session {
-        <<interface>>
-        +send_message(Message msg)
-        +get_name() string
-        +is_online() bool
-    }
-    
-    class ZmqSession {
-        -zmq::socket_t socket_
-        -string client_name_
-        -vector~Message~ outgoing_queue_
-        +send_message(Message msg)
-        +process_incoming()
-    }
-    
-    class Message {
-        +uint8_t type
-        +uint8_t flags
-        +uint64_t correlation_id
-        +string sender
-        +string destination
-        +vector~uint8_t~ payload
-        +serialize() vector~uint8_t~
-        +deserialize(data) Message
+        -IStorage& storage_
+        -IMessageSender& message_sender_
+        -IConfigProvider& config_provider_
+        -unordered_map~string, shared_ptr~Session~~ active_clients_
+        -unordered_map~string, string~ identity_to_name_
+        -mutex registry_mutex_
+        +Router(IStorage&, IMessageSender&, IConfigProvider&)
+        +RouteMessage(Message, zmq::message_t&)
+        +FindSession(string) shared_ptr~Session~
+        +RegisterClient(string, shared_ptr~Session~) bool
+        +UnregisterClient(string)
+        +PrintActiveClients()
+        +CleanupInactiveSessions()
+        +DeliverOfflineMessages(string)
+        +DeliverPendingReplies(string)
+        +PersistMessageForClient(string, Message)
+        +CheckExpiredAcks()
+        -HandleRegister(Message, zmq::message_t&)
+        -HandleMessage(Message)
+        -HandleReply(Message)
+        -HandleAck(Message)
+        -HandleUnregister(Message, zmq::message_t&)
     }
     
     class Storage {
-        +save_message(Message msg) uint64_t
-        +load_pending(string client) vector~Message~
-        +mark_delivered(uint64_t msg_id)
-        +save_correlation(uint64_t msg_id, uint64_t correlation_id)
-        +find_by_correlation(uint64_t correlation_id) Message
+        -sqlite3* db_
+        -string db_path_
+        -mutex db_mutex_
+        +Storage(string)
+        +~Storage()
+        +SaveMessage(Message) uint64_t
+        +MarkDelivered(uint64_t)
+        +MarkSent(uint64_t)
+        +NeedsAck(uint64_t) bool
+        +MarkPending(uint64_t)
+        +SaveCorrelation(uint64_t, uint64_t, string)
+        +FindOriginalSenderByCorrelation(uint64_t) string
+        +FindMessageIdByCorrelation(uint64_t) uint64_t
+        +FindMessageIdByCorrelationAndDestination(uint64_t, string) uint64_t
+        +MarkAckReceived(uint64_t, string)
+        +LoadExpiredSent(int) vector~PendingMessage~
+        +LoadPendingRepliesForSenderOnly(string) vector~PendingMessage~
+        +LoadPendingMessagesOnly(string) vector~PendingMessage~
+        -CreateTables()
+        -ThrowOnDbError(int, string)
+        -SaveMessageWithStatus(Message, int) uint64_t
     }
     
-    class CorrelationEngine {
-        -map~uint64_t, PendingRequest~ requests_
-        +register_request(uint64_t correlation_id, string original_sender)
-        +handle_response(Message response)
+    class Session {
+        -zmq::message_t identity_
+        -IMessageSender& message_sender_
+        -const Config& config_
+        -string name_
+        -bool is_online_
+        -queue~Message~ outgoing_queue_
+        -mutable mutex queue_mutex_
+        -time_point last_receive_
+        -time_point last_activity_
+        -function~void(string, Message)~ persist_callback_
+        +Session(zmq::message_t, IMessageSender&, Config&)
+        +~Session()
+        +SendMessage(Message) bool
+        +GetName() string
+        +IsOnline() bool
+        +GetIdentity() zmq::message_t&
+        +SetName(string)
+        +FlushQueue()
+        +MarkOffline()
+        +MarkOnline()
+        +UpdateLastReceive()
+        +UpdateLastActivity()
+        +IsExpired(int) bool
+        +PersistQueueToDatabase()
+        +SetPersistCallback(function)
+        +GetQueueSize() size_t
+        -SendZmqMessage(Message) bool
+        -EnqueueMessage(Message)
     }
     
-    class OfflineQueueManager {
-        -Storage& storage_
-        +enqueue_offline(string client, Message msg)
-        +deliver_queued(string client, Session session)
+    class Message {
+        -MessageType type_
+        -uint8_t flags_
+        -uint64_t correlation_id_
+        -string sender_
+        -string destination_
+        -vector~uint8_t~ payload_
+        +Message()
+        +Message(MessageType, uint8_t, uint64_t, string, string, vector~uint8_t~)
+        +GetType() MessageType
+        +GetFlags() uint8_t
+        +GetCorrelationId() uint64_t
+        +GetSender() string
+        +GetDestination() string
+        +GetPayload() vector~uint8_t~
+        +SetType(MessageType)
+        +SetFlags(uint8_t)
+        +SetCorrelationId(uint64_t)
+        +SetSender(string)
+        +SetDestination(string)
+        +SetPayload(vector~uint8_t~)
+        +HasFlag(uint8_t) bool
+        +SetFlag(uint8_t)
+        +ClearFlag(uint8_t)
+        +NeedsReply() bool
+        +SetNeedsReply(bool)
+        +NeedsAck() bool
+        +SetNeedsAck(bool)
+        +Serialize() vector~uint8_t~
+        +Deserialize(vector~uint8_t~)$ Message
+        +ToString() string
     }
     
-    Server *-- Router
-    Server *-- Storage
-    Router --> CorrelationEngine
-    Router --> OfflineQueueManager
-    OfflineQueueManager --> Storage
-    CorrelationEngine --> Storage
-    Router --> Session : uses
-    Session <|-- ZmqSession
-    ZmqSession --> Message
-    Storage --> Message
+    %% ========== ОБРАБОТЧИКИ СООБЩЕНИЙ ==========
+    class RegisterHandler {
+        +Handle(Message, HandlerContext)
+    }
+    
+    class MessageHandler {
+        +Handle(Message, HandlerContext)
+    }
+    
+    class ReplyHandler {
+        +Handle(Message, HandlerContext)
+    }
+    
+    class AckHandler {
+        +Handle(Message, HandlerContext)
+    }
+    
+    class UnregisterHandler {
+        +Handle(Message, HandlerContext)
+    }
+    
+    class MessageHandlerFactory {
+        <<static>>
+        +Create(MessageType) unique_ptr~IMessageHandler~
+    }
+    
+    %% ========== ПЕРЕЧИСЛЕНИЯ ==========
+    class MessageType {
+        <<enumeration>>
+        Register = 1
+        Message = 2
+        Reply = 3
+        Ack = 4
+        Unregister = 5
+    }
+    
+    class MessageFlag {
+        <<enumeration>>
+        FlagNone = 0
+        FlagNeedsReply = 1
+        FlagNeedsAck = 2
+    }
+    
+    class MessageStatus {
+        <<enumeration>>
+        STATUS_PENDING = 0
+        STATUS_DELIVERED = 1
+        STATUS_SENT = 2
+    }
+    
+    %% ========== ОТНОШЕНИЯ ==========
+    Server ..|> IMessageSender : implements
+    Server ..|> IConfigProvider : implements
+    Server *-- Router : contains
+    Server *-- Storage : contains
+    Server --> PendingSend : uses
+    
+    Storage ..|> IStorage : implements
+    Storage --> PendingMessage : returns
+    Storage --> Message : stores
+    
+    Router ..|> ISessionManager : implements
+    Router --> IStorage : uses
+    Router --> IMessageSender : uses
+    Router --> IConfigProvider : uses
+    Router *-- Session : manages
+    
+    Session --> IMessageSender : uses
+    Session --> Config : uses
+    Session --> Message : processes
+    
+    IMessageHandler <|.. RegisterHandler : implements
+    IMessageHandler <|.. MessageHandler : implements
+    IMessageHandler <|.. ReplyHandler : implements
+    IMessageHandler <|.. AckHandler : implements
+    IMessageHandler <|.. UnregisterHandler : implements
+    
+    MessageHandlerFactory --> IMessageHandler : creates
+    MessageHandlerFactory ..> MessageType : uses
+    
+    HandlerContext --> IStorage
+    HandlerContext --> ISessionManager
+    HandlerContext --> IMessageSender
+    HandlerContext --> IConfigProvider
+    
+    Message --> MessageType : uses
+    Message --> MessageFlag : uses
+    Storage --> MessageStatus : uses
+    
+    Server --> Config : uses
+    Router --> Config : uses (via IConfigProvider)
 ```
 
 ## 🔄 Сценарии работы
