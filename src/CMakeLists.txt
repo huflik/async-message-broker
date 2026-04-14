@@ -45,6 +45,34 @@ target_link_libraries(broker
     pthread
 )
 
+# ============================================================================
+# Примеры клиентов
+# ============================================================================
+
+option(BUILD_EXAMPLES "Build example clients" ON)
+
+if(BUILD_EXAMPLES)
+    # Проверяем наличие клиента
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../examples/test_client_full.cpp")
+        add_executable(test_client_full ../examples/test_client_full.cpp)
+        
+        # Исправлено: используем ${ZMQ_LIBRARIES} вместо ${ZMQ_LIB}
+        target_link_libraries(test_client_full 
+            ${ZMQ_LIBRARIES} 
+            pthread
+        )
+        target_include_directories(test_client_full PRIVATE 
+            ${ZMQ_INCLUDE_DIRS}
+        )
+        
+        message(STATUS "test_client_full configured")
+    else()
+        message(WARNING "test_client_full.cpp not found")
+    endif()
+endif()
+
+# ============================================================================
+
 install(TARGETS broker DESTINATION bin)
 
 message(STATUS "========================================")

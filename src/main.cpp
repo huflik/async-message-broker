@@ -52,17 +52,8 @@ void PrintHelp(const char* program_name) {
               << "  --help                     Show this help message\n";
 }
 
-struct CommandLineConfig {
-    int port = 5555;
-    std::string db_path = "./broker.db";
-    int threads = 0;
-    std::string log_level = "info";
-    int session_timeout = 60;
-    int ack_timeout = 30;
-};
-
-CommandLineConfig ParseArgs(int argc, char* argv[]) {
-    CommandLineConfig config;
+broker::Config ParseArgs(int argc, char* argv[]) {
+    broker::Config config;
     
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -71,17 +62,17 @@ CommandLineConfig ParseArgs(int argc, char* argv[]) {
             PrintHelp(argv[0]);
             exit(0);
         } else if (arg == "--port" && i + 1 < argc) {
-            config.port = std::stoi(argv[++i]);
+            config.Port = std::stoi(argv[++i]);
         } else if (arg == "--db-path" && i + 1 < argc) {
-            config.db_path = argv[++i];
+            config.DbPath = argv[++i];
         } else if (arg == "--threads" && i + 1 < argc) {
-            config.threads = std::stoi(argv[++i]);
+            config.Threads = std::stoi(argv[++i]);
         } else if (arg == "--log-level" && i + 1 < argc) {
-            config.log_level = argv[++i];
+            config.LogLevel = argv[++i];
         } else if (arg == "--session-timeout" && i + 1 < argc) {
-            config.session_timeout = std::stoi(argv[++i]);
+            config.SessionTimeout = std::stoi(argv[++i]);
         } else if (arg == "--ack-timeout" && i + 1 < argc) {
-            config.ack_timeout = std::stoi(argv[++i]);
+            config.AckTimeout = std::stoi(argv[++i]);
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
             PrintHelp(argv[0]);
@@ -89,9 +80,9 @@ CommandLineConfig ParseArgs(int argc, char* argv[]) {
         }
     }
     
-    if (config.threads == 0) {
-        config.threads = std::thread::hardware_concurrency();
-        if (config.threads == 0) config.threads = 1;
+    if (config.Threads == 0) {
+        config.Threads = std::thread::hardware_concurrency();
+        if (config.Threads == 0) config.Threads = 1;
     }
     
     return config;
@@ -99,24 +90,17 @@ CommandLineConfig ParseArgs(int argc, char* argv[]) {
 
 int main(int argc, char* argv[]) {
     auto cmd_config = ParseArgs(argc, argv);
-    SetupLogging(cmd_config.log_level);
+    SetupLogging(cmd_config.LogLevel);
     
     spdlog::info("Starting Async Message Broker v1.0.0");
     spdlog::info("Configuration: port={}, db_path={}, threads={}, log_level={}, session_timeout={}s, ack_timeout={}s, heartbeat_interval={}s",
-                 cmd_config.port, cmd_config.db_path, cmd_config.threads, cmd_config.log_level,
-                 cmd_config.session_timeout, cmd_config.ack_timeout);
+                 cmd_config.Port, cmd_config.DbPath, cmd_config.Threads, cmd_config.LogLevel,
+                 cmd_config.SessionTimeout, cmd_config.AckTimeout);
     
     SetupSignalHandlers();
+
     
-    broker::Config broker_config;
-    broker_config.Port = cmd_config.port;
-    broker_config.DbPath = cmd_config.db_path;
-    broker_config.Threads = cmd_config.threads;
-    broker_config.LogLevel = cmd_config.log_level;
-    broker_config.SessionTimeout = cmd_config.session_timeout;
-    broker_config.AckTimeout = cmd_config.ack_timeout;
-    
-    broker::Server server(broker_config);
+    broker::Server server(cmd_config);
     
     std::thread server_thread([&server]() {
         server.Run();
