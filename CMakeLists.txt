@@ -8,7 +8,15 @@ include_directories(include)
 # Добавляем поддиректорию src
 add_subdirectory(src)
 
-# Вывод информации
+# Тесты
+option(WITH_GTEST "Build tests" ON)
+
+if(WITH_GTEST)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
 message(STATUS "========================================")
 message(STATUS "Async Message Broker v${PROJECT_VERSION}")
+message(STATUS "Build tests: ${WITH_GTEST}")
 message(STATUS "========================================")
