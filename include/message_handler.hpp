@@ -62,7 +62,7 @@ public:
 // Фабрика обработчиков
 class MessageHandlerFactory {
 public:
-    static std::unique_ptr<IMessageHandler> Create(MessageType type);
+    [[nodiscard]] static std::unique_ptr<IMessageHandler> Create(MessageType type);
 };
 
 } // namespace broker

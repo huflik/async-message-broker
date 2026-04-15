@@ -13,7 +13,13 @@ struct Config {
     // Таймауты (в секундах)
     int SessionTimeout = 60;      // Таймаут неактивной сессии (для fallback)
     int AckTimeout = 30;           // Таймаут ожидания ACK
-    //int HeartbeatInterval = 0;     // Интервал проверки heartbeat (0 = отключено)
+    
+    Config() = default;
+    ~Config() = default;
+    Config(const Config&) = default;
+    Config(Config&&) = default;
+    Config& operator=(const Config&) = default;
+    Config& operator=(Config&&) = default;
 };
 
 } // namespace broker

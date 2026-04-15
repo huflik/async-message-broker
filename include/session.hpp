@@ -16,48 +16,44 @@
 
 namespace broker {
 
-// Удаляем forward declaration of Server (больше не нужен)
-// class Server;  // УДАЛИТЬ эту строку
-
 class Session {
 public:
-    // ИЗМЕНИТЬ: вместо Server используем интерфейсы
     explicit Session(zmq::message_t identity, 
                      IMessageSender& message_sender,
                      const Config& config);
     
     ~Session();
     
-    bool SendMessage(const Message& msg);
-    std::string GetName() const { return name_; }
-    bool IsOnline() const { return is_online_; }
+    [[nodiscard]] bool SendMessage(const Message& msg);
+    std::string GetName() const noexcept { return name_; }
+    bool IsOnline() const noexcept { return is_online_; }
     
-    const zmq::message_t& GetIdentity() const { return identity_; }
+    const zmq::message_t& GetIdentity() const noexcept { return identity_; }
     
     void SetName(const std::string& name) { name_ = name; }
     void FlushQueue();
     
-    void MarkOffline() { 
+    void MarkOffline() noexcept { 
         is_online_ = false; 
         spdlog::debug("Client {} marked as offline", name_);
     }
     
-    void MarkOnline() {
+    void MarkOnline() noexcept {
         is_online_ = true;
         spdlog::debug("Client {} marked as online", name_);
     }
     
-    void UpdateLastReceive() {
+    void UpdateLastReceive() noexcept {
         last_receive_ = std::chrono::steady_clock::now();
         spdlog::trace("Client {} last receive updated", name_);
     }
     
-    void UpdateLastActivity() {
+    void UpdateLastActivity() noexcept {
         last_activity_ = std::chrono::steady_clock::now();
         spdlog::trace("Client {} last activity updated", name_);
     }
     
-    bool IsExpired(int timeout_seconds) const {
+    bool IsExpired(int timeout_seconds) const noexcept {
         if (!is_online_) return true;
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_receive_);
@@ -66,21 +62,18 @@ public:
     
     void PersistQueueToDatabase();
     
-    // ИЗМЕНИТЬ: сигнатура колбэка теперь принимает IStorage* или функцию
     void SetPersistCallback(std::function<void(const std::string&, const Message&)> callback) {
         persist_callback_ = std::move(callback);
     }
     
-    // ИЗМЕНИТЬ: больше не нужен отдельный send_callback, используем IMessageSender
-    // Удаляем метод SetSendCallback
     
-    size_t GetQueueSize() const {
+    size_t GetQueueSize() const noexcept {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         return outgoing_queue_.size();
     }
 
 private:
-    bool SendZmqMessage(const Message& msg);
+    [[nodiscard]] bool SendZmqMessage(const Message& msg);
     void EnqueueMessage(const Message& msg);
     
     zmq::message_t identity_;

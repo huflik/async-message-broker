@@ -1,6 +1,7 @@
 #include "message.hpp"
 #include <cstring>
 #include <arpa/inet.h>
+#include <sstream>
 
 namespace broker {
 

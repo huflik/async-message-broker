@@ -23,26 +23,18 @@ public:
     
     void RouteMessage(const Message& msg, const zmq::message_t& identity);
     
-    // Реализация ISessionManager
-    std::shared_ptr<Session> FindSession(const std::string& name) override;
-    bool RegisterClient(const std::string& name, std::shared_ptr<Session> session) override;
+    [[nodiscard]] std::shared_ptr<Session> FindSession(const std::string& name) override;
+    [[nodiscard]] bool RegisterClient(const std::string& name, std::shared_ptr<Session> session) override;
     void UnregisterClient(const std::string& name) override;
     void PrintActiveClients() override;
     void CleanupInactiveSessions() override;
     
-    // Методы для доставки сообщений
     void DeliverOfflineMessages(const std::string& name);
     void DeliverPendingReplies(const std::string& name);
     void PersistMessageForClient(const std::string& client_name, const Message& msg);
     void CheckExpiredAcks();
 
 private:
-    void HandleRegister(const Message& msg, const zmq::message_t& identity);
-    void HandleMessage(const Message& msg);
-    void HandleReply(const Message& msg);
-    void HandleAck(const Message& msg);
-    void HandleUnregister(const Message& msg, const zmq::message_t& identity);
-    
     IStorage& storage_;
     IMessageSender& message_sender_;
     IConfigProvider& config_provider_;

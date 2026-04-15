@@ -18,7 +18,6 @@ Server::Server(const Config& config)
     
     storage_ = std::make_unique<Storage>(config_.DbPath);
     
-    // ИЗМЕНИТЬ: передаем this как IMessageSender и IConfigProvider
     router_ = std::make_unique<Router>(
         *storage_,      // IStorage&
         *this,          // IMessageSender&
@@ -83,16 +82,27 @@ void Server::SetupAsioIntegration() {
 }
 
 void Server::OnZmqEvent(const boost::system::error_code& ec) {
-    if (!running_) return;
+    if (!running_) {
+        spdlog::debug("Server stopping, ignoring ZMQ event");
+        return;
+    }
     
     if (ec) {
+        if (ec == boost::asio::error::operation_aborted) {
+            spdlog::debug("ZMQ FD operation aborted");
+            return;
+        }
         spdlog::error("ZeroMQ FD error: {}", ec.message());
-        zmq_fd_->async_wait(
-            boost::asio::posix::stream_descriptor::wait_read,
-            [this](const boost::system::error_code& ec) {
-                OnZmqEvent(ec);
-            }
-        );
+        
+        // Перерегистрируемся на следующее событие
+        if (running_) {
+            zmq_fd_->async_wait(
+                boost::asio::posix::stream_descriptor::wait_read,
+                [this](const boost::system::error_code& ec) {
+                    OnZmqEvent(ec);
+                }
+            );
+        }
         return;
     }
     
@@ -138,12 +148,15 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
         spdlog::trace("ZMQ_POLLOUT event (socket ready for write)");
     }
     
-    zmq_fd_->async_wait(
-        boost::asio::posix::stream_descriptor::wait_read,
-        [this](const boost::system::error_code& ec) {
-            OnZmqEvent(ec);
-        }
-    );
+    // Перерегистрируемся на следующее событие
+    if (running_) {
+        zmq_fd_->async_wait(
+            boost::asio::posix::stream_descriptor::wait_read,
+            [this](const boost::system::error_code& ec) {
+                OnZmqEvent(ec);
+            }
+        );
+    }
 }
 
 void Server::ProcessPendingSends() {
@@ -213,7 +226,6 @@ void Server::ScheduleSendProcessing() {
     });
 }
 
-// ИЗМЕНИТЬ: реализация IMessageSender
 void Server::SendToClient(zmq::message_t identity, 
                           zmq::message_t data,
                           std::function<void(bool)> callback) {
@@ -226,19 +238,21 @@ void Server::SendToClient(zmq::message_t identity,
 }
 
 void Server::SetupCleanupTimer() {
+    if (!running_) return;
+    
     cleanup_timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
     cleanup_timer_->expires_after(std::chrono::seconds(10));
     
     cleanup_timer_->async_wait([this](const boost::system::error_code& ec) {
         if (!ec && running_) {
             router_->CleanupInactiveSessions();
-            SetupCleanupTimer();
+            SetupCleanupTimer();  // Рекурсивно перезапускаем таймер
         }
     });
 }
 
 void Server::SetupAckTimeoutTimer() {
-    if (config_.AckTimeout <= 0) return;
+    if (!running_ || config_.AckTimeout <= 0) return;
     
     ack_timeout_timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
     ack_timeout_timer_->expires_after(std::chrono::seconds(config_.AckTimeout));
@@ -246,24 +260,9 @@ void Server::SetupAckTimeoutTimer() {
     ack_timeout_timer_->async_wait([this](const boost::system::error_code& ec) {
         if (!ec && running_) {
             router_->CheckExpiredAcks();
-            SetupAckTimeoutTimer();
+            SetupAckTimeoutTimer();  // Рекурсивно перезапускаем таймер
         }
     });
-}
-
-void Server::AsioThread() {
-    spdlog::debug("Asio thread started");
-    
-    while (running_) {
-        try {
-            io_context_.run();
-            break;
-        } catch (const std::exception& e) {
-            spdlog::error("Asio error: {}", e.what());
-        }
-    }
-    
-    spdlog::debug("Asio thread stopped");
 }
 
 void Server::Run() {
@@ -272,40 +271,72 @@ void Server::Run() {
     SetupCleanupTimer();
     SetupAckTimeoutTimer();
     
+    // Запускаем пул потоков
     for (int i = 0; i < config_.Threads; ++i) {
-        threads_.emplace_back(&Server::AsioThread, this);
+        threads_.emplace_back([this, i] {
+            spdlog::debug("Worker thread #{} started", i);
+            io_context_.run();
+            spdlog::debug("Worker thread #{} stopped", i);
+        });
     }
     
-    spdlog::info("Server started with {} threads", config_.Threads);
+    spdlog::info("Server started with {} worker threads", config_.Threads);
     
-    while (running_) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-}
-
-void Server::Stop() {
-    if (!running_) return;
-    
-    spdlog::info("Stopping server...");
-    running_ = false;
-    
-    {
-        std::lock_guard<std::mutex> lock(pending_sends_mutex_);
-        while (!pending_sends_.empty()) {
-            pending_sends_.pop();
-        }
-    }
-    
-    io_context_.stop();
-    work_guard_.reset();
-    
+    // Ждем завершения всех потоков
     for (auto& thread : threads_) {
         if (thread.joinable()) {
             thread.join();
         }
     }
     
-    spdlog::info("Server stopped");
+    spdlog::info("Server run loop exited");
 }
+
+void Server::Stop() {
+    if (!running_.exchange(false)) {
+        return;  // Уже остановлен
+    }
+    
+    spdlog::info("Stopping server...");
+    
+    // Очищаем очередь отправки
+    {
+        std::lock_guard<std::mutex> lock(pending_sends_mutex_);
+        while (!pending_sends_.empty()) {
+            auto& send = pending_sends_.front();
+            if (send.callback) {
+                send.callback(false);  // Уведомляем об ошибке
+            }
+            pending_sends_.pop();
+        }
+    }
+    
+    // Отменяем все таймеры
+    if (cleanup_timer_) {
+        boost::system::error_code ec;
+        cleanup_timer_->cancel(ec);
+    }
+    
+    if (ack_timeout_timer_) {
+        boost::system::error_code ec;
+        ack_timeout_timer_->cancel(ec);
+    }
+    
+    // Закрываем ZMQ сокет
+    try {
+        router_socket_.close();
+    } catch (const std::exception& e) {
+        spdlog::error("Error closing ZMQ socket: {}", e.what());
+    }
+    
+    // Сбрасываем work_guard, чтобы io_context::run() мог завершиться
+    work_guard_.reset();
+    
+    // Останавливаем io_context
+    io_context_.stop();
+    
+    spdlog::info("Server stop signal sent, waiting for threads...");
+}
+
 
 } // namespace broker

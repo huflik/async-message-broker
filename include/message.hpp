@@ -48,15 +48,13 @@ public:
             const std::string& destination,
             const std::vector<uint8_t>& payload);
     
-    // Геттеры
-    MessageType GetType() const { return type_; }
-    uint8_t GetFlags() const { return flags_; }
-    uint64_t GetCorrelationId() const { return correlation_id_; }
-    const std::string& GetSender() const { return sender_; }
-    const std::string& GetDestination() const { return destination_; }
-    const std::vector<uint8_t>& GetPayload() const { return payload_; }
+    MessageType GetType() const noexcept { return type_; }
+    uint8_t GetFlags() const noexcept { return flags_; }
+    uint64_t GetCorrelationId() const noexcept { return correlation_id_; }
+    const std::string& GetSender() const noexcept { return sender_; }
+    const std::string& GetDestination() const noexcept { return destination_; }
+    const std::vector<uint8_t>& GetPayload() const noexcept { return payload_; }
     
-    // Сеттеры
     void SetType(MessageType type) { type_ = type; }
     void SetFlags(uint8_t flags) { flags_ = flags; }
     void SetCorrelationId(uint64_t id) { correlation_id_ = id; }
@@ -64,24 +62,23 @@ public:
     void SetDestination(const std::string& dest) { destination_ = dest; }
     void SetPayload(const std::vector<uint8_t>& payload) { payload_ = payload; }
     
-    // Работа с флагами
-    bool HasFlag(uint8_t flag) const { return (flags_ & flag) != 0; }
+    bool HasFlag(uint8_t flag) const noexcept { return (flags_ & flag) != 0; }
     void SetFlag(uint8_t flag) { flags_ |= flag; }
     void ClearFlag(uint8_t flag) { flags_ &= ~flag; }
-    bool NeedsReply() const { return HasFlag(FlagNeedsReply); }
+    bool NeedsReply() const noexcept { return HasFlag(FlagNeedsReply); }
     void SetNeedsReply(bool value) {
         if (value) SetFlag(FlagNeedsReply);
         else ClearFlag(FlagNeedsReply);
     }
-    bool NeedsAck() const { return HasFlag(FlagNeedsAck); }
+    bool NeedsAck() const noexcept { return HasFlag(FlagNeedsAck); }
     void SetNeedsAck(bool value) {
         if (value) SetFlag(FlagNeedsAck);
         else ClearFlag(FlagNeedsAck);
     }
     
     // Сериализация
-    std::vector<uint8_t> Serialize() const;
-    static Message Deserialize(const std::vector<uint8_t>& data);
+    [[nodiscard]] std::vector<uint8_t> Serialize() const;
+    [[nodiscard]] static Message Deserialize(const std::vector<uint8_t>& data);
     
     // Отладка
     std::string ToString() const;

@@ -13,14 +13,12 @@
 #include <boost/asio/posix/stream_descriptor.hpp>
 #include <boost/asio/steady_timer.hpp>
 
-#include "config.hpp"        // ДОБАВИТЬ
-#include "interfaces.hpp"    // ДОБАВИТЬ
+#include "config.hpp"
+#include "interfaces.hpp"
 #include "router.hpp"
 #include "storage.hpp"
 
 namespace broker {
-
-// Удаляем struct Config из этого файла (теперь он в config.hpp)
 
 struct PendingSend {
     zmq::message_t identity;
@@ -33,18 +31,23 @@ struct PendingSend {
     
     PendingSend(const PendingSend&) = delete;
     PendingSend& operator=(const PendingSend&) = delete;
-    PendingSend(PendingSend&&) = default;
-    PendingSend& operator=(PendingSend&&) = default;
+    PendingSend(PendingSend&&) noexcept = default;
+    PendingSend& operator=(PendingSend&&) noexcept = default;
 };
 
-// ДОБАВИТЬ: Server теперь реализует интерфейсы
 class Server : public IMessageSender, public IConfigProvider {
 public:
     explicit Server(const Config& config);
     ~Server();
     
+    // Запуск сервера (блокирующий вызов)
     void Run();
+    
+    // Остановка сервера (потокобезопасный)
     void Stop();
+    
+    // Проверка, запущен ли сервер
+    bool IsRunning() const noexcept { return running_.load(); }
     
     // Реализация IMessageSender
     void SendToClient(zmq::message_t identity, 
@@ -52,19 +55,12 @@ public:
                       std::function<void(bool)> callback = nullptr) override;
     
     // Реализация IConfigProvider
-    const Config& GetConfig() const override { return config_; }
-    
-    // Для обратной совместимости (можно удалить после рефакторинга)
-    void SendMessage(zmq::message_t identity, zmq::message_t data, 
-                     std::function<void(bool)> callback = nullptr) {
-        SendToClient(std::move(identity), std::move(data), std::move(callback));
-    }
+    const Config& GetConfig() const noexcept override { return config_; }
 
 private:
     void SetupZmqSocket();
     void SetupAsioIntegration();
     void OnZmqEvent(const boost::system::error_code& ec);
-    void AsioThread();
     void SetupCleanupTimer();
     void SetupAckTimeoutTimer();
     void ProcessPendingSends();

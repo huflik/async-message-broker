@@ -113,8 +113,10 @@ TEST_F(SessionTest, FlushQueueAfterComingOnline) {
     Message msg1(MessageType::Message, FlagNone, 0, "alice", "bob", {0x01});
     Message msg2(MessageType::Message, FlagNone, 0, "alice", "bob", {0x02});
     
-    session->SendMessage(msg1);
-    session->SendMessage(msg2);
+    bool result1 = session->SendMessage(msg1);
+    bool result2 = session->SendMessage(msg2);
+    EXPECT_TRUE(result1);  
+    EXPECT_TRUE(result2);
     EXPECT_EQ(session->GetQueueSize(), 2);
     
     sender->send_called = false;
@@ -145,9 +147,12 @@ TEST_F(SessionTest, GetQueueSize) {
     EXPECT_EQ(session->GetQueueSize(), 0);
     
     session->MarkOffline();
-    session->SendMessage(Message(MessageType::Message, FlagNone, 0, "a", "b", {0x01}));
+ 
+    bool result1 = session->SendMessage(Message(MessageType::Message, FlagNone, 0, "a", "b", {0x01}));
+    EXPECT_TRUE(result1);
     EXPECT_EQ(session->GetQueueSize(), 1);
     
-    session->SendMessage(Message(MessageType::Message, FlagNone, 0, "a", "b", {0x02}));
+    bool result2 = session->SendMessage(Message(MessageType::Message, FlagNone, 0, "a", "b", {0x02}));
+    EXPECT_TRUE(result2);
     EXPECT_EQ(session->GetQueueSize(), 2);
 }
