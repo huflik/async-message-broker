@@ -17,7 +17,7 @@
 std::mutex g_shutdown_mutex;
 std::condition_variable g_shutdown_cv;
 bool g_shutdown_requested = false;
-broker::Server* g_server_ptr = nullptr;  // Указатель для доступа из signal handler
+std::atomic<broker::Server*> g_server_ptr{nullptr};  // Потокобезопасный указатель
 
 // ==================== Обработчик сигналов ====================
 void SignalHandler(int signal) {
@@ -37,8 +37,9 @@ void SignalHandler(int signal) {
     }
     
     // Останавливаем сервер если он существует
-    if (g_server_ptr) {
-        g_server_ptr->Stop();
+    auto* server = g_server_ptr.load(std::memory_order_acquire);
+    if (server) {
+        server->Stop();
     }
     
     // Уведомляем главный поток
@@ -67,12 +68,19 @@ void SetupLogging(const std::string& log_level = "info") {
     std::vector<spdlog::sink_ptr> sinks{console_sink, file_sink};
     auto logger = std::make_shared<spdlog::logger>("broker", sinks.begin(), sinks.end());
     
-    if (log_level == "trace") logger->set_level(spdlog::level::trace);
-    else if (log_level == "debug") logger->set_level(spdlog::level::debug);
-    else if (log_level == "info") logger->set_level(spdlog::level::info);
-    else if (log_level == "warn") logger->set_level(spdlog::level::warn);
-    else if (log_level == "error") logger->set_level(spdlog::level::err);
-    else logger->set_level(spdlog::level::info);
+    if (log_level == "trace") {
+        logger->set_level(spdlog::level::trace);
+    } else if (log_level == "debug") {
+        logger->set_level(spdlog::level::debug);
+    } else if (log_level == "info") {
+        logger->set_level(spdlog::level::info);
+    } else if (log_level == "warn") {
+        logger->set_level(spdlog::level::warn);
+    } else if (log_level == "error") {
+        logger->set_level(spdlog::level::err);
+    } else {
+        logger->set_level(spdlog::level::info);
+    }
     
     logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%s:%#] %v");
     logger->flush_on(spdlog::level::err);  // Автоматический flush при ошибках
@@ -80,80 +88,37 @@ void SetupLogging(const std::string& log_level = "info") {
     spdlog::set_default_logger(logger);
 }
 
-// ==================== Парсинг аргументов ====================
-void PrintHelp(const char* program_name) {
-    std::cout << "Usage: " << program_name << " [OPTIONS]\n"
-              << "Options:\n"
-              << "  --port PORT                ZeroMQ listen port (default: 5555)\n"
-              << "  --db-path PATH             SQLite database path (default: ./broker.db)\n"
-              << "  --threads N                Number of worker threads (default: CPU cores)\n"
-              << "  --log-level LEVEL          Log level: trace, debug, info, warn, error (default: info)\n"
-              << "  --session-timeout N        Session timeout in seconds (default: 60)\n"
-              << "  --ack-timeout N            ACK timeout in seconds (default: 30)\n"
-              << "  --help                     Show this help message\n";
-}
-
-broker::Config ParseArgs(int argc, char* argv[]) {
-    broker::Config config;
-    
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        
-        if (arg == "--help") {
-            PrintHelp(argv[0]);
-            exit(0);
-        } else if (arg == "--port" && i + 1 < argc) {
-            config.Port = std::stoi(argv[++i]);
-        } else if (arg == "--db-path" && i + 1 < argc) {
-            config.DbPath = argv[++i];
-        } else if (arg == "--threads" && i + 1 < argc) {
-            config.Threads = std::stoi(argv[++i]);
-        } else if (arg == "--log-level" && i + 1 < argc) {
-            config.LogLevel = argv[++i];
-        } else if (arg == "--session-timeout" && i + 1 < argc) {
-            config.SessionTimeout = std::stoi(argv[++i]);
-        } else if (arg == "--ack-timeout" && i + 1 < argc) {
-            config.AckTimeout = std::stoi(argv[++i]);
-        } else {
-            std::cerr << "Unknown option: " << arg << "\n";
-            PrintHelp(argv[0]);
-            exit(1);
-        }
-    }
-    
-    if (config.Threads == 0) {
-        config.Threads = std::thread::hardware_concurrency();
-        if (config.Threads == 0) config.Threads = 1;
-    }
-    
-    return config;
+// ==================== Вывод баннера ====================
+void PrintBanner(const broker::Config& config) {
+    spdlog::info("=== Async Message Broker v1.0.0 ===");
+    spdlog::info("Configuration:");
+    spdlog::info("  Port: {}", config.Port);
+    spdlog::info("  Database: {}", config.DbPath);
+    spdlog::info("  Threads: {}", config.Threads);
+    spdlog::info("  Log level: {}", config.LogLevel);
+    spdlog::info("  Session timeout: {}s", config.SessionTimeout);
+    spdlog::info("  ACK timeout: {}s", config.AckTimeout);
+    spdlog::info("=====================================");
 }
 
 // ==================== Главная функция ====================
 int main(int argc, char* argv[]) {
     try {
-        // Парсим аргументы
-        auto config = ParseArgs(argc, argv);
+        // Парсим аргументы командной строки
+        auto config = broker::Config::ParseArgs(argc, argv);
         
         // Настраиваем логирование
         SetupLogging(config.LogLevel);
         
-        spdlog::info("=== Async Message Broker v1.0.0 ===");
-        spdlog::info("Configuration:");
-        spdlog::info("  Port: {}", config.Port);
-        spdlog::info("  Database: {}", config.DbPath);
-        spdlog::info("  Threads: {}", config.Threads);
-        spdlog::info("  Log level: {}", config.LogLevel);
-        spdlog::info("  Session timeout: {}s", config.SessionTimeout);
-        spdlog::info("  ACK timeout: {}s", config.AckTimeout);
-        spdlog::info("=====================================");
+        // Выводим баннер с конфигурацией
+        PrintBanner(config);
         
         // Настраиваем обработчики сигналов
         SetupSignalHandlers();
         
         // Создаем сервер
         broker::Server server(config);
-        g_server_ptr = &server;
+        g_server_ptr.store(&server, std::memory_order_release);
         
         // Запускаем сервер в отдельном потоке
         std::thread server_thread([&server]() {
@@ -170,7 +135,7 @@ int main(int argc, char* argv[]) {
         
         spdlog::info("Shutdown signal received, waiting for server to stop...");
         
-        // Если сервер еще не остановлен (на случай, если сигнал пришел до создания сервера)
+        // Если сервер еще не остановлен (на случай, если сигнал пришёл до создания сервера)
         if (server.IsRunning()) {
             server.Stop();
         }
@@ -180,12 +145,32 @@ int main(int argc, char* argv[]) {
             server_thread.join();
         }
         
-        g_server_ptr = nullptr;
+        // Сбрасываем указатель
+        g_server_ptr.store(nullptr, std::memory_order_release);
         
         spdlog::info("=== Broker shutdown complete ===");
         
+    } catch (const broker::HelpRequested&) {
+        // Нормальное завершение после --help
+        return 0;
+    } catch (const broker::ConfigError& e) {
+        std::cerr << "Configuration error: " << e.what() << std::endl;
+        broker::Config::PrintHelp(argv[0]);
+        return 1;
     } catch (const std::exception& e) {
-        spdlog::critical("Fatal error: {}", e.what());
+        // Логирование может быть ещё не настроено
+        if (spdlog::default_logger()) {
+            spdlog::critical("Fatal error: {}", e.what());
+        } else {
+            std::cerr << "Fatal error: " << e.what() << std::endl;
+        }
+        return 1;
+    } catch (...) {
+        if (spdlog::default_logger()) {
+            spdlog::critical("Unknown fatal error");
+        } else {
+            std::cerr << "Unknown fatal error" << std::endl;
+        }
         return 1;
     }
     
