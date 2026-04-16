@@ -12,6 +12,7 @@
 #include "storage.hpp"
 #include "session.hpp"
 #include "interfaces.hpp"
+#include "metrics.hpp"
 
 namespace broker {
 
@@ -19,7 +20,8 @@ class Router : public ISessionManager {
 public:
     Router(IStorage& storage, 
            IMessageSender& message_sender,
-           IConfigProvider& config_provider);
+           IConfigProvider& config_provider,
+           std::shared_ptr<IMetrics> metrics = nullptr);
     
     void RouteMessage(const Message& msg, const zmq::message_t& identity);
     
@@ -35,9 +37,12 @@ public:
     void CheckExpiredAcks();
 
 private:
+    void UpdateSessionMetrics();   
+
     IStorage& storage_;
     IMessageSender& message_sender_;
     IConfigProvider& config_provider_;
+    std::shared_ptr<IMetrics> metrics_;
     
     std::unordered_map<std::string, std::shared_ptr<Session>> active_clients_;
     std::unordered_map<std::string, std::string> identity_to_name_;

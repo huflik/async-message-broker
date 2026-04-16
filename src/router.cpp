@@ -8,10 +8,12 @@ namespace broker {
 
 Router::Router(IStorage& storage, 
                IMessageSender& message_sender,
-               IConfigProvider& config_provider)
+               IConfigProvider& config_provider,
+               std::shared_ptr<IMetrics> metrics)
     : storage_(storage)
     , message_sender_(message_sender)
     , config_provider_(config_provider)
+    , metrics_(metrics)
 {
     int ack_timeout = config_provider_.GetConfig().AckTimeout;
     spdlog::info("Router initialized with ACK timeout: {}s", ack_timeout);
@@ -20,7 +22,7 @@ Router::Router(IStorage& storage,
 void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
     spdlog::debug("Routing message: {}", msg.ToString());
     
-    // Находим сессию один раз
+    // Находим сессию
     std::shared_ptr<Session> session;
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
@@ -35,21 +37,20 @@ void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
             if (session_it != active_clients_.end()) {
                 session = session_it->second;
                 session->UpdateLastReceive();
-                spdlog::trace("Updated last_receive for client: {}", it->second);
             }
         }
     }
     
-    // Создаем контекст для обработчика
+    // Создаем контекст с метриками
     HandlerContext ctx{
         .storage = storage_,
         .session_manager = *this,
         .message_sender = message_sender_,
         .config_provider = config_provider_,
-        .identity = identity
+        .identity = identity,
+        .metrics = metrics_  
     };
     
-    // Создаем и вызываем соответствующий обработчик
     auto handler = MessageHandlerFactory::Create(msg.GetType());
     if (handler) {
         handler->Handle(msg, ctx);
@@ -62,7 +63,7 @@ bool Router::RegisterClient(const std::string& name, std::shared_ptr<Session> se
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
     if (active_clients_.find(name) != active_clients_.end()) {
-        spdlog::warn("Client name {} already taken (race condition)", name);
+        spdlog::warn("Client name {} already taken", name);
         return false;
     }
     
@@ -75,7 +76,13 @@ bool Router::RegisterClient(const std::string& name, std::shared_ptr<Session> se
     );
     identity_to_name_[identity_str] = name;
     
-    spdlog::debug("Client registered: {} (identity size: {})", name, identity.size());
+    // Метрики
+    if (metrics_) {
+        metrics_->IncrementClientsRegistered();
+        metrics_->SetActiveSessions(active_clients_.size());
+    }
+    
+    spdlog::debug("Client registered: {}", name);
     return true;
 }
 
@@ -91,6 +98,13 @@ void Router::UnregisterClient(const std::string& name) {
         );
         identity_to_name_.erase(identity_str);
         active_clients_.erase(it);
+        
+        // Метрики
+        if (metrics_) {
+            metrics_->IncrementClientsUnregistered();
+            metrics_->SetActiveSessions(active_clients_.size());
+        }
+        
         spdlog::debug("Client unregistered: {}", name);
     }
 }
@@ -121,6 +135,10 @@ void Router::DeliverOfflineMessages(const std::string& name) {
     }
     
     auto pending_messages = storage_.LoadPendingMessagesOnly(name);
+
+    if (!pending_messages.empty() && metrics_) {
+        metrics_->IncrementOfflineDelivered();
+    }
     
     if (pending_messages.empty()) {
         spdlog::debug("No pending messages for client: {}", name);
@@ -261,12 +279,17 @@ void Router::CleanupInactiveSessions() {
             );
             identity_to_name_.erase(identity_str);
             active_clients_.erase(it);
-            spdlog::debug("Cleaned up session for: {}", name);
+            
+            // Метрики
+            if (metrics_) {
+                metrics_->IncrementClientsTimeout();
+            }
         }
     }
     
     if (!to_remove.empty()) {
         spdlog::info("Cleaned up {} inactive sessions", to_remove.size());
+        UpdateSessionMetrics();
     }
 }
 
@@ -276,6 +299,10 @@ void Router::CheckExpiredAcks() {
     if (ack_timeout_seconds <= 0) return;
     
     auto expired_messages = storage_.LoadExpiredSent(ack_timeout_seconds);
+
+    if (!expired_messages.empty() && metrics_) {
+        metrics_->IncrementMessagesExpired();
+    }
     
     for (const auto& pending : expired_messages) {
         spdlog::warn("Message {} expired (no ACK received after {} seconds), resetting to PENDING", 
@@ -304,6 +331,13 @@ void Router::CheckExpiredAcks() {
                 storage_.MarkPending(pending.id);
             }
         }
+    }
+}
+
+void Router::UpdateSessionMetrics() {
+    if (metrics_) {
+        std::lock_guard<std::mutex> lock(registry_mutex_);
+        metrics_->SetActiveSessions(active_clients_.size());
     }
 }
 

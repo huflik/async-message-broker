@@ -4,6 +4,7 @@
 #include "message.hpp"
 #include "interfaces.hpp"
 #include "session.hpp"
+#include "metrics.hpp"
 #include <memory>
 #include <functional>
 #include <zmq.hpp>
@@ -20,6 +21,7 @@ struct HandlerContext {
     IMessageSender& message_sender;
     IConfigProvider& config_provider;
     const zmq::message_t& identity;
+    std::shared_ptr<IMetrics> metrics;
 };
 
 // Базовый класс для всех обработчиков

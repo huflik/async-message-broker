@@ -169,6 +169,10 @@ void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
 
 void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     spdlog::debug("Handling ACK for correlation_id: {}", msg.GetCorrelationId());
+
+    if (ctx.metrics) {
+        ctx.metrics->IncrementAcksReceived();
+    }
     
     uint64_t acked_correlation_id = msg.GetCorrelationId();
     

@@ -17,7 +17,7 @@
 #include "interfaces.hpp"
 #include "router.hpp"
 #include "storage.hpp"
-
+#include "metrics.hpp"
 namespace broker {
 
 struct PendingSend {
@@ -35,7 +35,7 @@ struct PendingSend {
     PendingSend& operator=(PendingSend&&) noexcept = default;
 };
 
-class Server : public IMessageSender, public IConfigProvider {
+class Server : public IMessageSender, public IConfigProvider, public IMetricsProvider {
 public:
     explicit Server(const Config& config);
     ~Server();
@@ -57,6 +57,8 @@ public:
     // Реализация IConfigProvider
     const Config& GetConfig() const noexcept override { return config_; }
 
+    std::shared_ptr<IMetrics> GetMetrics() const override { return metrics_manager_; }
+
 private:
     void SetupZmqSocket();
     void SetupAsioIntegration();
@@ -65,6 +67,7 @@ private:
     void SetupAckTimeoutTimer();
     void ProcessPendingSends();
     void ScheduleSendProcessing();
+    void UpdateQueueMetrics();
 
 private:
     Config config_;
@@ -86,6 +89,8 @@ private:
     std::queue<PendingSend> pending_sends_;
     std::mutex pending_sends_mutex_;
     std::atomic<bool> sending_in_progress_{false};
+
+    std::shared_ptr<MetricsManager> metrics_manager_;
 };
 
 } // namespace broker

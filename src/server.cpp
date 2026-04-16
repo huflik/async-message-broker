@@ -13,15 +13,27 @@ Server::Server(const Config& config)
     , router_socket_(zmq_context_, zmq::socket_type::router)
 {
     spdlog::info("Initializing server...");
-    spdlog::info("Configuration: session_timeout={}s, ack_timeout={}s",
-                 config_.SessionTimeout, config_.AckTimeout);
+    spdlog::info("Configuration: session_timeout={}s, ack_timeout={}s", config_.SessionTimeout, config_.AckTimeout);
+
+    if (config_.EnableMetrics) {
+        metrics_manager_ = std::make_shared<MetricsManager>();
+        try {
+            metrics_manager_->InitExposer(config_.MetricsBindAddress);
+            metrics_manager_->StartUpdater(std::chrono::seconds(config_.MetricsUpdateInterval));
+            spdlog::info("Metrics enabled on {}", config_.MetricsBindAddress);
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to initialize metrics: {}", e.what());
+            metrics_manager_.reset();
+        }
+    }             
     
     storage_ = std::make_unique<Storage>(config_.DbPath);
     
     router_ = std::make_unique<Router>(
         *storage_,      // IStorage&
         *this,          // IMessageSender&
-        *this           // IConfigProvider&
+        *this,           // IConfigProvider&
+        metrics_manager_
     );
     
     SetupZmqSocket();
@@ -30,6 +42,9 @@ Server::Server(const Config& config)
 
 Server::~Server() {
     Stop();
+    if (metrics_manager_) {
+        metrics_manager_->StopUpdater();
+    }
 }
 
 void Server::SetupZmqSocket() {
@@ -106,6 +121,7 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
         return;
     }
     
+    UpdateQueueMetrics();
     ProcessPendingSends();
     
     int events = router_socket_.get(zmq::sockopt::events);
@@ -128,6 +144,14 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
             }
             
             try {
+
+                ScopedMetricsTimer timer(metrics_manager_);
+                
+                if (metrics_manager_) {
+                    metrics_manager_->IncrementMessagesReceived();
+                    metrics_manager_->ObservePayloadSize(data.size());
+                }
+
                 std::vector<uint8_t> msg_data(
                     static_cast<uint8_t*>(data.data()),
                     static_cast<uint8_t*>(data.data()) + data.size()
@@ -140,6 +164,9 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
                 
             } catch (const std::exception& e) {
                 spdlog::error("Error processing message: {}", e.what());
+                if (metrics_manager_) {
+                    metrics_manager_->IncrementMessagesFailed();
+                }
             }
         }
     }
@@ -173,6 +200,7 @@ void Server::ProcessPendingSends() {
     
     while (!sends.empty()) {
         auto& send = sends.front();
+        bool success = false;
         try {
             auto result = router_socket_.send(send.identity, zmq::send_flags::dontwait | zmq::send_flags::sndmore);
             if (!result) {
@@ -197,6 +225,7 @@ void Server::ProcessPendingSends() {
                 if (send.callback) send.callback(false);
             } else {
                 spdlog::trace("Message sent successfully");
+                success = true;
                 if (send.callback) send.callback(true);
             }
         } catch (const zmq::error_t& e) {
@@ -206,6 +235,16 @@ void Server::ProcessPendingSends() {
             spdlog::error("Error sending message: {}", e.what());
             if (send.callback) send.callback(false);
         }
+
+
+        if (metrics_manager_) {
+            if (success) {
+                metrics_manager_->IncrementMessagesSent();
+            } else {
+                metrics_manager_->IncrementMessagesFailed();
+            }
+        }
+
         sends.pop();
     }
     
@@ -215,6 +254,15 @@ void Server::ProcessPendingSends() {
         if (!pending_sends_.empty()) {
             ScheduleSendProcessing();
         }
+    }
+
+    UpdateQueueMetrics();
+}
+
+void Server::UpdateQueueMetrics() {
+    if (metrics_manager_) {
+        std::lock_guard<std::mutex> lock(pending_sends_mutex_);
+        metrics_manager_->SetPendingSendQueueSize(pending_sends_.size());
     }
 }
 

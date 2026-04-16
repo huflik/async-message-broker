@@ -25,6 +25,10 @@ struct Config {
     // Таймауты (в секундах)
     int SessionTimeout = 60;      // Таймаут неактивной сессии (для fallback)
     int AckTimeout = 30;           // Таймаут ожидания ACK
+
+    bool EnableMetrics = true;
+    std::string MetricsBindAddress = "0.0.0.0:8080";
+    int MetricsUpdateInterval = 2;  // секунды
     
     Config() noexcept = default;
     ~Config() noexcept = default;
@@ -35,44 +39,50 @@ struct Config {
 
 
     static void PrintHelp(const char* program_name) {
-    std::cout << "Usage: " << program_name << " [OPTIONS]\n"
-              << "Options:\n"
-              << "  --port PORT                ZeroMQ listen port (default: 5555)\n"
-              << "  --db-path PATH             SQLite database path (default: ./broker.db)\n"
-              << "  --threads N                Number of worker threads (default: CPU cores)\n"
-              << "  --log-level LEVEL          Log level: trace, debug, info, warn, error (default: info)\n"
-              << "  --session-timeout N        Session timeout in seconds (default: 60)\n"
-              << "  --ack-timeout N            ACK timeout in seconds (default: 30)\n"
-              << "  --help                     Show this help message\n";
-}
+        std::cout << "Usage: " << program_name << " [OPTIONS]\n"
+                  << "Options:\n"
+                  << "  --port PORT                ZeroMQ listen port (default: 5555)\n"
+                  << "  --db-path PATH             SQLite database path (default: ./broker.db)\n"
+                  << "  --threads N                Number of worker threads (default: CPU cores)\n"
+                  << "  --log-level LEVEL          Log level: trace, debug, info, warn, error\n"
+                  << "  --session-timeout N        Session timeout in seconds (default: 60)\n"
+                  << "  --ack-timeout N            ACK timeout in seconds (default: 30)\n"
+                  << "  --disable-metrics          Disable Prometheus metrics\n"
+                  << "  --metrics-address ADDR     Metrics bind address (default: 0.0.0.0:8080)\n"
+                  << "  --help                     Show this help message\n";
+    }
 
     static Config ParseArgs(int argc, char* argv[]) {
-    Config config;
-    
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
+        Config config;
         
-        if (arg == "--help") {
-            PrintHelp(argv[0]);
-            throw HelpRequested();
-        } else if (arg == "--port" && i + 1 < argc) {
-            config.Port = std::stoi(argv[++i]);
-        } else if (arg == "--db-path" && i + 1 < argc) {
-            config.DbPath = argv[++i];
-        } else if (arg == "--threads" && i + 1 < argc) {
-            config.Threads = std::stoi(argv[++i]);
-        } else if (arg == "--log-level" && i + 1 < argc) {
-            config.LogLevel = argv[++i];
-        } else if (arg == "--session-timeout" && i + 1 < argc) {
-            config.SessionTimeout = std::stoi(argv[++i]);
-        } else if (arg == "--ack-timeout" && i + 1 < argc) {
-            config.AckTimeout = std::stoi(argv[++i]);
-        } else {
-            std::cerr << "Unknown option: " << arg << "\n";
-            PrintHelp(argv[0]);
-            throw ConfigError("Unknown option: " + arg);
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            
+            if (arg == "--help") {
+                PrintHelp(argv[0]);
+                throw HelpRequested();
+            } else if (arg == "--port" && i + 1 < argc) {
+                config.Port = std::stoi(argv[++i]);
+            } else if (arg == "--db-path" && i + 1 < argc) {
+                config.DbPath = argv[++i];
+            } else if (arg == "--threads" && i + 1 < argc) {
+                config.Threads = std::stoi(argv[++i]);
+            } else if (arg == "--log-level" && i + 1 < argc) {
+                config.LogLevel = argv[++i];
+            } else if (arg == "--session-timeout" && i + 1 < argc) {
+                config.SessionTimeout = std::stoi(argv[++i]);
+            } else if (arg == "--ack-timeout" && i + 1 < argc) {
+                config.AckTimeout = std::stoi(argv[++i]);
+            } else if (arg == "--disable-metrics") {
+                config.EnableMetrics = false;
+            } else if (arg == "--metrics-address" && i + 1 < argc) {
+                config.MetricsBindAddress = argv[++i];
+            } else {
+                std::cerr << "Unknown option: " << arg << "\n";
+                PrintHelp(argv[0]);
+                throw ConfigError("Unknown option: " + arg);
+            }
         }
-    }
     
     if (config.Threads == 0) {
         config.Threads = std::thread::hardware_concurrency();

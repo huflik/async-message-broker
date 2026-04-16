@@ -14,6 +14,7 @@ namespace broker {
 // Forward declarations
 class Session;
 struct PendingMessage;
+class IMetrics;
 
 // ============================================================================
 // Интерфейс для работы с хранилищем (Storage)
@@ -90,6 +91,12 @@ public:
     virtual void OnMessagePersist(const std::string& client_name, const Message& msg) = 0;
     virtual void OnMessageSent(const std::string& client_name, const Message& msg) = 0;
     virtual void OnMessageFailed(const std::string& client_name, const Message& msg) = 0;
+};
+
+class IMetricsProvider {
+public:
+    virtual ~IMetricsProvider() = default;
+    [[nodiscard]] virtual std::shared_ptr<IMetrics> GetMetrics() const = 0;
 };
 
 } // namespace broker
