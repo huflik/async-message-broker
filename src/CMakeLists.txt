@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.15)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -114,6 +114,10 @@ if(BUILD_EXAMPLES)
     add_executable(test_client_full ../examples/cpp_client/test_client_full.cpp)       
     target_link_libraries(test_client_full ${ZMQ_LIBRARIES} pthread)
     target_include_directories(test_client_full PRIVATE ${ZMQ_INCLUDE_DIRS})
+
+    add_executable(universal_client ../examples/universal_client.cpp)
+    target_link_libraries(universal_client ${ZMQ_LIBRARIES} pthread)
+    target_include_directories(universal_client PRIVATE ${ZMQ_INCLUDE_DIRS})
 
 endif()
 

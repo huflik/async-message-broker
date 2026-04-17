@@ -67,6 +67,7 @@ void RegisterHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     ctx.session_manager.PrintActiveClients();
 }
 
+// src/message_handler.cpp
 void MessageHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     const std::string& destination = msg.GetDestination();
     
@@ -75,10 +76,11 @@ void MessageHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     uint64_t message_id = ctx.storage.SaveMessage(msg);
     spdlog::debug("Message saved to database with id: {}", message_id);
     
-    if (msg.NeedsReply()) {
+    // Сохраняем correlation если нужен ACK ИЛИ Reply
+    if (msg.NeedsReply() || msg.NeedsAck()) {
         ctx.storage.SaveCorrelation(message_id, msg.GetCorrelationId(), msg.GetSender());
-        spdlog::debug("Saved correlation: corr_id={} -> original_sender={}", 
-                      msg.GetCorrelationId(), msg.GetSender());
+        spdlog::debug("Saved correlation: message_id={}, corr_id={}, sender={}", 
+                      message_id, msg.GetCorrelationId(), msg.GetSender());
     }
     
     auto session = ctx.session_manager.FindSession(destination);
@@ -103,8 +105,6 @@ void MessageHandler::Handle(const Message& msg, const HandlerContext& ctx) {
             if (!msg.NeedsAck()) {
                 ctx.storage.MarkDelivered(message_id);
                 spdlog::debug("Message {} delivered and marked as delivered", message_id);
-            } else {
-                spdlog::debug("Message {} sent, waiting for ACK from client", message_id);
             }
         } else {
             spdlog::info("Failed to send message to {}, marking offline", destination);
@@ -115,6 +115,7 @@ void MessageHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     }
 }
 
+// src/message_handler.cpp
 void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     spdlog::debug("Handling reply with correlation_id: {}", msg.GetCorrelationId());
     
@@ -125,17 +126,14 @@ void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     if (!original_sender.empty()) {
         reply_msg.SetDestination(original_sender);
         spdlog::debug("Reply redirected to original sender: {}", original_sender);
-    } else {
-        spdlog::warn("No original sender found for correlation_id={}, using destination={}", 
-                     msg.GetCorrelationId(), msg.GetDestination());
     }
     
     const std::string& destination = reply_msg.GetDestination();
-    spdlog::debug("Reply destination: {}", destination);
     
     uint64_t message_id = ctx.storage.SaveMessage(reply_msg);
     spdlog::debug("Reply saved to database with id: {}", message_id);
     
+    // Сохраняем correlation для reply
     std::string correlation_owner = !original_sender.empty() ? original_sender : reply_msg.GetDestination();
     ctx.storage.SaveCorrelation(message_id, msg.GetCorrelationId(), correlation_owner);
     spdlog::debug("Saved correlation for reply: message_id={}, corr_id={}, owner={}", 
@@ -144,8 +142,6 @@ void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     auto session = ctx.session_manager.FindSession(destination);
     
     if (session && session->IsOnline()) {
-        spdlog::debug("Attempting immediate delivery of reply {} to {}", message_id, destination);
-        
         if (reply_msg.NeedsAck()) {
             ctx.storage.MarkSent(message_id);
         }
@@ -153,26 +149,19 @@ void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
         if (session->SendMessage(reply_msg)) {
             if (!reply_msg.NeedsAck()) {
                 ctx.storage.MarkDelivered(message_id);
-                spdlog::debug("Reply {} delivered immediately", message_id);
-            } else {
-                spdlog::debug("Reply {} sent, waiting for ACK", message_id);
             }
             return;
         }
         
-        spdlog::info("Immediate delivery failed for reply {}, marking {} offline", message_id, destination);
         session->MarkOffline();
     }
     
     spdlog::info("Reply {} stored in database for later delivery to {}", message_id, destination);
 }
 
+// src/message_handler.cpp
 void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     spdlog::debug("Handling ACK for correlation_id: {}", msg.GetCorrelationId());
-
-    if (ctx.metrics) {
-        ctx.metrics->IncrementAcksReceived();
-    }
     
     uint64_t acked_correlation_id = msg.GetCorrelationId();
     
@@ -183,23 +172,29 @@ void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     
     const std::string& ack_sender = msg.GetSender();
     
-    uint64_t message_id = ctx.storage.FindMessageIdByCorrelationAndDestination(
-        acked_correlation_id, ack_sender);
+    // Ищем сообщение по correlation_id
+    uint64_t message_id = ctx.storage.FindMessageIdByCorrelation(acked_correlation_id);
     
     if (message_id == 0) {
-        message_id = ctx.storage.FindMessageIdByCorrelation(acked_correlation_id);
+        // Пробуем найти с учетом destination
+        message_id = ctx.storage.FindMessageIdByCorrelationAndDestination(
+            acked_correlation_id, ack_sender);
+        
         if (message_id == 0) {
-            spdlog::warn("ACK for unknown correlation_id={}", acked_correlation_id);
+            spdlog::warn("ACK for unknown correlation_id={} from {}", 
+                         acked_correlation_id, ack_sender);
             return;
         }
-        spdlog::debug("Using fallback: found message_id={} for correlation_id={}", 
-                      message_id, acked_correlation_id);
     }
     
     if (ctx.storage.NeedsAck(message_id)) {
         ctx.storage.MarkDelivered(message_id);
         ctx.storage.MarkAckReceived(message_id, ack_sender);
         spdlog::info("Message {} marked as DELIVERED after ACK from {}", message_id, ack_sender);
+        
+        if (ctx.metrics) {
+            ctx.metrics->IncrementAcksReceived();
+        }
     } else {
         spdlog::debug("Message {} does not require ACK, ignoring", message_id);
     }

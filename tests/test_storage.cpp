@@ -58,12 +58,22 @@ TEST_F(StorageTest, MarkSent) {
 }
 
 TEST_F(StorageTest, NeedsAck) {
-    Message msg_with_ack(MessageType::Message, FlagNeedsAck, 0, "a", "b", {});
-    uint64_t id1 = storage->SaveMessage(msg_with_ack);
+    // Создаем сообщение с флагом NeedsAck
+    Message msg(MessageType::Message, FlagNeedsAck, 12345, "alice", "bob", {});
+    
+    uint64_t id1 = storage->SaveMessage(msg);
+    
+    // ВАЖНО: Сначала помечаем как SENT
+    storage->MarkSent(id1);
+    
+    // Теперь NeedsAck должен вернуть true
     EXPECT_TRUE(storage->NeedsAck(id1));
     
-    Message msg_without_ack(MessageType::Message, FlagNone, 0, "a", "b", {});
-    uint64_t id2 = storage->SaveMessage(msg_without_ack);
+    // Создаем сообщение без флага NeedsAck
+    Message msg2(MessageType::Message, FlagNone, 12346, "alice", "bob", {});
+    uint64_t id2 = storage->SaveMessage(msg2);
+    storage->MarkSent(id2);
+    
     EXPECT_FALSE(storage->NeedsAck(id2));
 }
 
