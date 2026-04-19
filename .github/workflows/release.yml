@@ -36,13 +36,21 @@ jobs:
             zlib1g-dev \
             libcurl4-openssl-dev \
             libgtest-dev \
+            libgmock-dev \
             wget \
             g++ \
             make
 
-      - name: Build and Install GTest
+      - name: Build and Install GTest and GMock
         run: |
+          # Собираем GTest
           cd /usr/src/gtest
+          cmake CMakeLists.txt
+          make
+          cp lib/*.a /usr/lib
+          
+          # Собираем GMock
+          cd /usr/src/gmock
           cmake CMakeLists.txt
           make
           cp lib/*.a /usr/lib
@@ -176,6 +184,10 @@ jobs:
         run: |
           cd build
           make -j$(nproc)
+          
+      - name: Strip Binary (Reduce Size)
+        run: |
+          strip build/broker
           
       - name: Prepare Package Directory
         run: |
