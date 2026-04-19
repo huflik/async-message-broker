@@ -30,13 +30,7 @@ jobs:
             libsqlite3-dev \
             libspdlog-dev \
             zlib1g-dev \
-            libcurl4-openssl-dev \
-            ruby \
-            ruby-dev \
-            rubygems
-      
-      - name: Install fpm
-        run: sudo gem install fpm
+            libcurl4-openssl-dev
       
       - name: Build prometheus-cpp
         run: |
@@ -64,14 +58,30 @@ jobs:
       - name: Build project
         run: cmake --build build --config Release -j $(nproc)
       
+      - name: Debug - List build directory
+        run: |
+          echo "=== Build directory contents ==="
+          ls -la build/
+          echo "=== Looking for broker executable ==="
+          find build -name "broker" -type f -executable 2>/dev/null || echo "broker not found"
+          find build -name "*.deb" 2>/dev/null || echo "No deb files"
+      
       - name: Create DEB package structure
         run: |
           mkdir -p pkg/DEBIAN
           mkdir -p pkg/usr/bin
           mkdir -p pkg/lib/systemd/system
           
-          # Копируем бинарник
-          cp build/broker pkg/usr/bin/
+          # Ищем бинарник в разных возможных местах
+          if [ -f "build/broker" ]; then
+            cp build/broker pkg/usr/bin/
+          elif [ -f "build/src/broker" ]; then
+            cp build/src/broker pkg/usr/bin/
+          else
+            echo "ERROR: broker executable not found!"
+            find build -name "broker" -type f
+            exit 1
+          fi
           
           # Создаем control файл
           cat > pkg/DEBIAN/control << EOF
@@ -80,6 +90,7 @@ jobs:
           Section: net
           Priority: optional
           Architecture: amd64
+          Depends: libzmq5, libboost-system1.74.0, libsqlite3-0, libstdc++6, libc6
           Maintainer: Your Name <your.email@example.com>
           Description: Async Message Broker with guaranteed delivery
            High-performance message broker with ZeroMQ transport,
@@ -105,6 +116,8 @@ jobs:
         run: |
           dpkg-deb --build pkg
           mv pkg.deb async-message-broker-${{ github.run_number }}.deb
+          echo "=== DEB package created ==="
+          ls -la *.deb
       
       - name: Create Release
         if: github.event_name == 'push'
