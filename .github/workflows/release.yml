@@ -12,7 +12,100 @@ env:
   MAINTAINER: "Your Name <your.email@example.com>"
 
 jobs:
-  build-and-package:
+  # ============================================================================
+  # Этап 1: Сборка и тестирование
+  # ============================================================================
+  test:
+    runs-on: ubuntu-22.04
+    container:
+      image: ubuntu:22.04
+      
+    steps:
+      - name: Install System Dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential \
+            cmake \
+            git \
+            pkg-config \
+            libzmq3-dev \
+            libboost-system-dev \
+            libsqlite3-dev \
+            libspdlog-dev \
+            zlib1g-dev \
+            libcurl4-openssl-dev \
+            libgtest-dev \
+            wget \
+            g++ \
+            make
+
+      - name: Build and Install GTest
+        run: |
+          cd /usr/src/gtest
+          cmake CMakeLists.txt
+          make
+          cp lib/*.a /usr/lib
+          
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build prometheus-cpp (Static Build)
+        run: |
+          git clone --recursive https://github.com/jupp0r/prometheus-cpp.git
+          cd prometheus-cpp
+          git checkout v1.2.4
+          git submodule update --init --recursive
+          
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DENABLE_TESTING=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DUSE_THIRDPARTY_LIBRARIES=ON \
+            -DENABLE_COMPRESSION=ON
+          make -j$(nproc)
+          make install
+          cd ../..
+          rm -rf prometheus-cpp
+
+      - name: Configure CMake Project (with Tests)
+        run: |
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DBUILD_EXAMPLES=OFF \
+            -DWITH_GTEST=ON
+          
+      - name: Build Project
+        run: |
+          cd build
+          make -j$(nproc)
+          
+      - name: Run Tests
+        run: |
+          cd build
+          ctest --output-on-failure --verbose
+          
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            build/Testing/
+            build/*.log
+
+  # ============================================================================
+  # Этап 2: Сборка DEB пакета (только если тесты прошли)
+  # ============================================================================
+  package:
+    needs: test  # Зависит от успешного выполнения тестов
     runs-on: ubuntu-22.04
     container:
       image: ubuntu:22.04
@@ -50,12 +143,9 @@ jobs:
 
       - name: Build prometheus-cpp (Static Build)
         run: |
-          # Клонируем с подмодулями (civetweb нужен для pull-модуля)
           git clone --recursive https://github.com/jupp0r/prometheus-cpp.git
           cd prometheus-cpp
           git checkout v1.2.4
-          
-          # На всякий случай обновляем подмодули еще раз
           git submodule update --init --recursive
           
           mkdir build && cd build
@@ -72,14 +162,15 @@ jobs:
           cd ../..
           rm -rf prometheus-cpp
 
-      - name: Configure CMake Project
+      - name: Configure CMake Project (Release, No Tests)
         run: |
           mkdir build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
-            -DBUILD_EXAMPLES=OFF
+            -DBUILD_EXAMPLES=OFF \
+            -DWITH_GTEST=OFF
           
       - name: Build Project
         run: |
