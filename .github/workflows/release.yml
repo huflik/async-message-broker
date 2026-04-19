@@ -3,7 +3,7 @@ name: Build and Package DEB
 on:
   push:
     #tags:
-      #- 'v*'           # Запуск при публикации тега версии (например, v1.0.0)
+    #  - 'v*'           # Запуск при публикации тега версии (например, v1.0.0)
   workflow_dispatch:   # Возможность ручного запуска
 
 env:
@@ -30,6 +30,8 @@ jobs:
             libboost-system-dev \
             libsqlite3-dev \
             libspdlog-dev \
+            zlib1g-dev \
+            libcurl4-openssl-dev \
             wget \
             ruby \
             ruby-dev \
@@ -63,7 +65,8 @@ jobs:
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DENABLE_TESTING=OFF \
             -DBUILD_SHARED_LIBS=OFF \
-            -DUSE_THIRDPARTY_LIBRARIES=ON
+            -DUSE_THIRDPARTY_LIBRARIES=ON \
+            -DENABLE_COMPRESSION=ON
           make -j$(nproc)
           make install
           cd ../..
