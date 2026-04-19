@@ -1,0 +1,203 @@
+name: Build and Package DEB
+
+on:
+  push:
+    tags:
+      - 'v*'           # Запуск при публикации тега версии (например, v1.0.0)
+  workflow_dispatch:   # Возможность ручного запуска
+
+env:
+  # Укажите здесь финальное имя пакета и описание
+  PACKAGE_NAME: async-message-broker
+  DESCRIPTION: "Async Message Broker with guaranteed delivery and Prometheus metrics"
+  MAINTAINER: "Your Name <your.email@example.com>"
+
+jobs:
+  build-and-package:
+    runs-on: ubuntu-22.04 # Стабильная LTS версия для максимальной совместимости
+    container:
+      image: ubuntu:22.04
+      
+    steps:
+      - name: Install System Dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential \
+            cmake \
+            git \
+            pkg-config \
+            libzmq3-dev \
+            libboost-system-dev \
+            libsqlite3-dev \
+            libspdlog-dev \
+            wget \
+            ruby \
+            ruby-dev \
+            rubygems \
+            g++ \
+            make \
+            file
+
+      - name: Install fpm (Package Builder)
+        run: |
+          gem install fpm
+          
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build prometheus-cpp (Static Build)
+        run: |
+          git clone https://github.com/jupp0r/prometheus-cpp.git
+          cd prometheus-cpp
+          git checkout v1.2.4  # Используем стабильный тег
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DENABLE_TESTING=OFF \
+            -DBUILD_SHARED_LIBS=OFF
+          make -j$(nproc)
+          make install
+          cd ../..
+          rm -rf prometheus-cpp
+
+      - name: Configure CMake Project
+        run: |
+          mkdir build && cd build
+          # Важно: указываем статическую линковку, чтобы не тащить зависимости в deb
+          # и устанавливаем префикс в /usr
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
+            -DBUILD_EXAMPLES=OFF
+          
+      - name: Build Project
+        run: |
+          cd build
+          make -j$(nproc)
+          
+      - name: Prepare Package Directory
+        run: |
+          # Установка бинарника в локальную папку pkg-dir с правильной структурой
+          cd build
+          make install DESTDIR=../pkg-dir
+          cd ..
+          
+          # Создаем папки для systemd и документации
+          mkdir -p pkg-dir/lib/systemd/system
+          mkdir -p pkg-dir/usr/share/doc/${PACKAGE_NAME}
+          
+          # Копируем README (если он есть)
+          cp README.md pkg-dir/usr/share/doc/${PACKAGE_NAME}/ || true
+          
+          # Создаем systemd unit файл
+          cat > pkg-dir/lib/systemd/system/${PACKAGE_NAME}.service << EOF
+      [Unit]
+      Description=${DESCRIPTION}
+      After=network.target
+      
+      [Service]
+      Type=simple
+      User=nobody
+      Group=nogroup
+      ExecStart=/usr/bin/broker --port 5555 --db-path /var/lib/broker/broker.db
+      Restart=on-failure
+      RestartSec=5
+      
+      # Безопасность
+      NoNewPrivileges=yes
+      PrivateTmp=yes
+      ProtectSystem=full
+      ProtectHome=yes
+      
+      # Создаем рабочую директорию для БД
+      RuntimeDirectory=broker
+      StateDirectory=broker
+      
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+          
+          # Создаем post-install скрипт для включения сервиса
+          mkdir -p pkg-dir/DEBIAN
+          cat > pkg-dir/DEBIAN/postinst << EOF
+      #!/bin/sh
+      set -e
+      if [ "\$1" = "configure" ]; then
+          # Создаем пользователя, если его нет
+          if ! getent passwd broker > /dev/null; then
+              useradd --system --user-group --no-create-home --shell /usr/sbin/nologin broker
+          fi
+          # Назначаем права на директорию с БД
+          chown -R broker:broker /var/lib/broker
+          chmod 750 /var/lib/broker
+          
+          # Перезагружаем systemd и включаем сервис
+          systemctl daemon-reload
+          systemctl enable ${PACKAGE_NAME}.service
+      fi
+      EOF
+          chmod 755 pkg-dir/DEBIAN/postinst
+          
+          # Создаем pre-remove скрипт
+          cat > pkg-dir/DEBIAN/prerm << EOF
+      #!/bin/sh
+      set -e
+      if [ "\$1" = "remove" ]; then
+          systemctl stop ${PACKAGE_NAME}.service || true
+          systemctl disable ${PACKAGE_NAME}.service || true
+      fi
+      EOF
+          chmod 755 pkg-dir/DEBIAN/prerm
+
+      - name: Get Version from Tag
+        id: version
+        run: |
+          # Берем версию из тега git (убираем 'v' в начале)
+          VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=${VERSION#v}
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Version set to: $VERSION"
+
+      - name: Build DEB Package with fpm
+        run: |
+          # Используем fpm для сборки .deb
+          # --deb-no-default-config-files - чтобы systemd unit не считался конфигом
+          fpm \
+            -s dir \
+            -t deb \
+            -n "${PACKAGE_NAME}" \
+            -v "${VERSION}" \
+            --iteration "1" \
+            --license "MIT" \
+            --vendor "Your Organization" \
+            --maintainer "${MAINTAINER}" \
+            --description "${DESCRIPTION}" \
+            --url "https://github.com/${GITHUB_REPOSITORY}" \
+            --deb-no-default-config-files \
+            --depends "libzmq5" \
+            --depends "libboost-system1.74.0" \
+            --depends "libsqlite3-0" \
+            --depends "libstdc++6" \
+            --depends "libc6" \
+            -C ./pkg-dir \
+            .
+
+      - name: Upload DEB Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${PACKAGE_NAME}-deb-package
+          path: ./*.deb
+
+      - name: Release DEB Package
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ./*.deb
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
