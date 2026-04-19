@@ -8,7 +8,90 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  # ============================================================================
+  # Этап 1: Тестирование
+  # ============================================================================
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            build-essential \
+            pkg-config \
+            libzmq3-dev \
+            libboost-system-dev \
+            libsqlite3-dev \
+            libspdlog-dev \
+            zlib1g-dev \
+            libcurl4-openssl-dev \
+            libgtest-dev \
+            libgmock-dev
+      
+      - name: Build GTest and GMock
+        run: |
+          cd /usr/src/gtest
+          sudo cmake CMakeLists.txt
+          sudo make
+          sudo cp lib/*.a /usr/lib
+          
+          # Симлинки для GMock если нужно
+          if [ ! -f /usr/lib/libgmock.a ]; then
+            sudo ln -s /usr/lib/libgtest.a /usr/lib/libgmock.a
+            sudo ln -s /usr/lib/libgtest_main.a /usr/lib/libgmock_main.a
+          fi
+      
+      - name: Build prometheus-cpp
+        run: |
+          git clone --recursive https://github.com/jupp0r/prometheus-cpp.git
+          cd prometheus-cpp
+          git checkout v1.2.4
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DENABLE_TESTING=OFF \
+            -DBUILD_SHARED_LIBS=OFF
+          make -j$(nproc)
+          sudo make install
+          cd ../..
+      
+      - name: Configure CMake for Tests
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DWITH_GTEST=ON \
+            -DBUILD_EXAMPLES=OFF
+      
+      - name: Build tests
+        run: cmake --build build --config Debug -j $(nproc)
+      
+      - name: Run tests
+        run: |
+          cd build
+          ctest --output-on-failure --verbose
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            build/Testing/
+            build/*.log
+
+  # ============================================================================
+  # Этап 2: Сборка DEB пакета (только если тесты прошли)
+  # ============================================================================
+  package:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -47,7 +130,7 @@ jobs:
           sudo make install
           cd ../..
       
-      - name: Configure CMake
+      - name: Configure CMake for Release
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -95,14 +178,17 @@ jobs:
            Run with: broker --port 5555 --db-path /path/to/db
           EOF
           
-          # Создаем postinst скрипт для создания директории данных
+          # Создаем postinst скрипт
           cat > pkg/DEBIAN/postinst << EOF
           #!/bin/sh
           set -e
           mkdir -p /var/lib/async-message-broker
           chmod 755 /var/lib/async-message-broker
-          echo "Async Message Broker installed successfully!"
+          echo ""
+          echo "=== Async Message Broker installed ==="
           echo "Run: broker --help"
+          echo "Example: broker --port 5555 --db-path /var/lib/async-message-broker/broker.db"
+          echo ""
           EOF
           chmod 755 pkg/DEBIAN/postinst
       
@@ -123,16 +209,14 @@ jobs:
         with:
           tag_name: v1.0.${{ github.run_number }}
           release_name: Release v1.0.${{ github.run_number }}
-          draft: false
-          prerelease: false
-      
-      - name: Upload Release Asset
-        if: steps.create_release.outputs.id != ''
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./async-message-broker-${{ github.run_number }}.deb
-          asset_name: async-message-broker.deb
-          asset_content_type: application/vnd.debian.binary-package
+          body: |
+            ## Automated Build with Tests
+            
+            ✅ All tests passed
+            - Build number: ${{ github.run_number }}
+            - Commit: ${{ github.sha }}
+            
+            ### Installation
+            ```bash
+            sudo dpkg -i async-message-broker.deb
+            broker --help
