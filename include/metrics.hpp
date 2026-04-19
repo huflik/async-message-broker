@@ -3,145 +3,146 @@
 
 #include <memory>
 #include <atomic>
-#include <mutex>
 #include <chrono>
 #include <map>
 #include <string>
 #include <thread>
-#include <functional>
 
-// Предполагаем что prometheus-cpp установлен
+#ifdef BROKER_ENABLE_METRICS
 #include <prometheus/counter.h>
 #include <prometheus/gauge.h>
 #include <prometheus/histogram.h>
 #include <prometheus/registry.h>
 #include <prometheus/exposer.h>
+#endif
+
 #include <spdlog/spdlog.h>
 
 namespace broker {
 
 /**
- * Интерфейс для сбора метрик (для dependency injection)
+ * Интерфейс для сбора метрик (только используемые)
  */
 class IMetrics {
 public:
     virtual ~IMetrics() = default;
     
-    // Сообщения
+    // Используются в server.cpp (OnZmqEvent, ProcessPendingSends)
     virtual void IncrementMessagesReceived() = 0;
     virtual void IncrementMessagesSent() = 0;
     virtual void IncrementMessagesFailed() = 0;
-    virtual void IncrementAcksReceived() = 0;
-    virtual void IncrementMessagesExpired() = 0;
-    virtual void IncrementOfflineDelivered() = 0;
-    virtual void AddMessageProcessingTime(double seconds) = 0;
     virtual void ObservePayloadSize(size_t bytes) = 0;
+    virtual void AddMessageProcessingTime(double seconds) = 0;
     
-    // Клиенты
+    // Используются в router.cpp (RegisterClient, UnregisterClient, CleanupInactiveSessions)
     virtual void IncrementClientsRegistered() = 0;
     virtual void IncrementClientsUnregistered() = 0;
     virtual void IncrementClientsTimeout() = 0;
-    virtual void SetActiveConnections(int count) = 0;
     virtual void SetActiveSessions(int count) = 0;
     
-    // База данных
-    virtual void IncrementDbWrites() = 0;
-    virtual void IncrementDbReads() = 0;
-    virtual void IncrementDbErrors() = 0;
+    // Используются в router.cpp (DeliverOfflineMessages, CheckExpiredAcks)
+    virtual void IncrementOfflineDelivered() = 0;
+    virtual void IncrementMessagesExpired() = 0;
     
-    // Очереди
+    // Используется в message_handler.cpp (AckHandler)
+    virtual void IncrementAcksReceived() = 0;
+    
+    // Используется в server.cpp (UpdateQueueMetrics)
     virtual void SetPendingSendQueueSize(size_t size) = 0;
-    virtual void SetTotalQueuedMessages(size_t size) = 0;
 };
 
-/**
- * Структура для хранения атомарных метрик
- */
-struct MetricsData {
-    std::atomic<uint64_t> messages_received_total{0};
-    std::atomic<uint64_t> messages_sent_total{0};
-    std::atomic<uint64_t> messages_failed_total{0};
-    std::atomic<uint64_t> acks_received_total{0};
-    std::atomic<uint64_t> messages_expired_total{0};
-    std::atomic<uint64_t> offline_messages_delivered_total{0};
-    
-    std::atomic<uint64_t> clients_registered_total{0};
-    std::atomic<uint64_t> clients_unregistered_total{0};
-    std::atomic<uint64_t> clients_timeout_total{0};
-    std::atomic<int64_t> active_connections{0};
-    std::atomic<int64_t> active_sessions{0};
-    
-    std::atomic<uint64_t> db_write_ops_total{0};
-    std::atomic<uint64_t> db_read_ops_total{0};
-    std::atomic<uint64_t> db_errors_total{0};
-    
-    std::atomic<int64_t> pending_send_queue_size{0};
-    std::atomic<int64_t> total_queued_messages{0};
-};
+#ifdef BROKER_ENABLE_METRICS
 
-/**
- * Основной менеджер метрик
- */
+// ========== С PROMETHEUS ==========
 class MetricsManager : public IMetrics {
 public:
     explicit MetricsManager();
     ~MetricsManager();
     
-    // Инициализация HTTP экспортера
     void InitExposer(const std::string& bind_address = "0.0.0.0:8080");
-    
-    // Запуск фонового потока обновления
     void StartUpdater(std::chrono::seconds interval = std::chrono::seconds(2));
     void StopUpdater();
     
-    // Реализация IMetrics
-    void IncrementMessagesReceived() override { data_.messages_received_total++; }
-    void IncrementMessagesSent() override { data_.messages_sent_total++; }
-    void IncrementMessagesFailed() override { data_.messages_failed_total++; }
-    void IncrementAcksReceived() override { data_.acks_received_total++; }
-    void IncrementMessagesExpired() override { data_.messages_expired_total++; }
-    void IncrementOfflineDelivered() override { data_.offline_messages_delivered_total++; }
-    
-    void AddMessageProcessingTime(double seconds) override;
+    void IncrementMessagesReceived() override { messages_received_++; }
+    void IncrementMessagesSent() override { messages_sent_++; }
+    void IncrementMessagesFailed() override { messages_failed_++; }
     void ObservePayloadSize(size_t bytes) override;
+    void AddMessageProcessingTime(double seconds) override;
     
-    void IncrementClientsRegistered() override { data_.clients_registered_total++; }
-    void IncrementClientsUnregistered() override { data_.clients_unregistered_total++; }
-    void IncrementClientsTimeout() override { data_.clients_timeout_total++; }
-    void SetActiveConnections(int count) override { data_.active_connections = count; }
-    void SetActiveSessions(int count) override { data_.active_sessions = count; }
+    void IncrementClientsRegistered() override { clients_registered_++; }
+    void IncrementClientsUnregistered() override { clients_unregistered_++; }
+    void IncrementClientsTimeout() override { clients_timeout_++; }
+    void SetActiveSessions(int count) override { active_sessions_ = count; }
     
-    void IncrementDbWrites() override { data_.db_write_ops_total++; }
-    void IncrementDbReads() override { data_.db_read_ops_total++; }
-    void IncrementDbErrors() override { data_.db_errors_total++; }
+    void IncrementOfflineDelivered() override { offline_delivered_++; }
+    void IncrementMessagesExpired() override { messages_expired_++; }
+    void IncrementAcksReceived() override { acks_received_++; }
     
-    void SetPendingSendQueueSize(size_t size) override { data_.pending_send_queue_size = static_cast<int64_t>(size); }
-    void SetTotalQueuedMessages(size_t size) override { data_.total_queued_messages = static_cast<int64_t>(size); }
-    
-    // Доступ к сырым данным (для тестов)
-    const MetricsData& GetData() const { return data_; }
+    void SetPendingSendQueueSize(size_t size) override { pending_send_queue_ = static_cast<int64_t>(size); }
     
 private:
     void UpdateMetrics();
     void InitializePrometheusMetrics();
     
-private:
-    MetricsData data_;
+    // Счетчики
+    std::atomic<uint64_t> messages_received_{0};
+    std::atomic<uint64_t> messages_sent_{0};
+    std::atomic<uint64_t> messages_failed_{0};
+    std::atomic<uint64_t> acks_received_{0};
+    std::atomic<uint64_t> messages_expired_{0};
+    std::atomic<uint64_t> offline_delivered_{0};
     
+    std::atomic<uint64_t> clients_registered_{0};
+    std::atomic<uint64_t> clients_unregistered_{0};
+    std::atomic<uint64_t> clients_timeout_{0};
+    
+    std::atomic<int64_t> active_sessions_{0};
+    std::atomic<int64_t> pending_send_queue_{0};
+    
+    // Prometheus объекты
     std::unique_ptr<prometheus::Exposer> exposer_;
     std::shared_ptr<prometheus::Registry> registry_;
-    
-    // Указатели на конкретные метрики (без Family, так как они разные)
     std::map<std::string, prometheus::Counter*> counters_;
     std::map<std::string, prometheus::Gauge*> gauges_;
     prometheus::Histogram* processing_time_histogram_ = nullptr;
     prometheus::Histogram* payload_size_histogram_ = nullptr;
     
-    // Фоновый поток обновления
     std::atomic<bool> updater_running_{false};
     std::unique_ptr<std::thread> updater_thread_;
     std::chrono::seconds update_interval_{2};
 };
+
+#else // BROKER_ENABLE_METRICS
+
+// ========== ЗАГЛУШКА (без prometheus) ==========
+class MetricsManager : public IMetrics {
+public:
+    explicit MetricsManager() = default;
+    ~MetricsManager() = default;
+    
+    void InitExposer(const std::string&) {}
+    void StartUpdater(std::chrono::seconds = std::chrono::seconds(2)) {}
+    void StopUpdater() {}
+    
+    void IncrementMessagesReceived() override {}
+    void IncrementMessagesSent() override {}
+    void IncrementMessagesFailed() override {}
+    void ObservePayloadSize(size_t) override {}
+    void AddMessageProcessingTime(double) override {}
+    
+    void IncrementClientsRegistered() override {}
+    void IncrementClientsUnregistered() override {}
+    void IncrementClientsTimeout() override {}
+    void SetActiveSessions(int) override {}
+    
+    void IncrementOfflineDelivered() override {}
+    void IncrementMessagesExpired() override {}
+    void IncrementAcksReceived() override {}
+    
+    void SetPendingSendQueueSize(size_t) override {}
+};
+
+#endif // BROKER_ENABLE_METRICS
 
 /**
  * RAII таймер для замера времени обработки

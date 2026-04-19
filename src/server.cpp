@@ -7,32 +7,39 @@
 
 namespace broker {
 
+// src/server.cpp - в конструкторе Server
+
 Server::Server(const Config& config)
     : config_(config)
     , zmq_context_(1)
     , router_socket_(zmq_context_, zmq::socket_type::router)
 {
     spdlog::info("Initializing server...");
-    spdlog::info("Configuration: session_timeout={}s, ack_timeout={}s", config_.SessionTimeout, config_.AckTimeout);
+    spdlog::info("Configuration: session_timeout={}s, ack_timeout={}s", 
+                 config_.SessionTimeout, config_.AckTimeout);
 
+    // ВСЕГДА создаем metrics_manager (даже если метрики отключены)
+    metrics_manager_ = std::make_shared<MetricsManager>();
+    
+#ifdef BROKER_ENABLE_METRICS
     if (config_.EnableMetrics) {
-        metrics_manager_ = std::make_shared<MetricsManager>();
         try {
             metrics_manager_->InitExposer(config_.MetricsBindAddress);
             metrics_manager_->StartUpdater(std::chrono::seconds(config_.MetricsUpdateInterval));
             spdlog::info("Metrics enabled on {}", config_.MetricsBindAddress);
         } catch (const std::exception& e) {
             spdlog::error("Failed to initialize metrics: {}", e.what());
-            metrics_manager_.reset();
+            // Не падаем, продолжаем без метрик
         }
-    }             
+    }
+#endif
     
     storage_ = std::make_unique<Storage>(config_.DbPath);
     
     router_ = std::make_unique<Router>(
-        *storage_,      // IStorage&
-        *this,          // IMessageSender&
-        *this,           // IConfigProvider&
+        *storage_,
+        *this,
+        *this,
         metrics_manager_
     );
     
