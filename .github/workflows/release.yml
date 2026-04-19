@@ -36,26 +36,41 @@ jobs:
             zlib1g-dev \
             libcurl4-openssl-dev \
             libgtest-dev \
+            libgmock-dev \
             wget \
             g++ \
             make
 
-      - name: Build and Install GTest and GMock
+      - name: Prepare GTest and GMock
         run: |
-          # В Ubuntu 22.04 GMock включен в GTest
+          # Устанавливаем заголовки GTest и GMock в системные директории
+          mkdir -p /usr/local/include/gtest
+          mkdir -p /usr/local/include/gmock
+          
+          # Копируем заголовки GTest
+          cp -r /usr/src/gtest/include/gtest/* /usr/local/include/gtest/
+          
+          # Копируем заголовки GMock (если они есть в googletest)
+          if [ -d /usr/src/googletest/googlemock/include/gmock ]; then
+            cp -r /usr/src/googletest/googlemock/include/gmock/* /usr/local/include/gmock/
+          elif [ -d /usr/src/gmock ]; then
+            cp -r /usr/src/gmock/include/gmock/* /usr/local/include/gmock/
+          fi
+          
+          # Собираем библиотеки
           cd /usr/src/gtest
           cmake CMakeLists.txt
           make
-          cp lib/libgtest.a /usr/lib
-          cp lib/libgtest_main.a /usr/lib
-          cp lib/libgmock.a /usr/lib 2>/dev/null || true
-          cp lib/libgmock_main.a /usr/lib 2>/dev/null || true
+          cp lib/libgtest.a /usr/local/lib/
+          cp lib/libgtest_main.a /usr/local/lib/
           
-          # Если GMock не собрался, создаем симлинки (для совместимости)
-          if [ ! -f /usr/lib/libgmock.a ]; then
-            echo "Creating symlinks for GMock compatibility"
-            ln -s /usr/lib/libgtest.a /usr/lib/libgmock.a
-            ln -s /usr/lib/libgtest_main.a /usr/lib/libgmock_main.a
+          # Собираем GMock если есть отдельно
+          if [ -d /usr/src/gmock ]; then
+            cd /usr/src/gmock
+            cmake CMakeLists.txt
+            make
+            cp lib/libgmock.a /usr/local/lib/
+            cp lib/libgmock_main.a /usr/local/lib/
           fi
           
       - name: Checkout Code
@@ -91,7 +106,9 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DBUILD_EXAMPLES=OFF \
-            -DWITH_GTEST=ON
+            -DWITH_GTEST=ON \
+            -DGTEST_ROOT=/usr/local \
+            -DGMOCK_ROOT=/usr/local
           
       - name: Build Project
         run: |
