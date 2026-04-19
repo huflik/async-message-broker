@@ -1,4 +1,4 @@
-// message_handler.cpp
+// src/message_handler.cpp
 #include "message_handler.hpp"
 #include <cstring>
 #include <spdlog/spdlog.h>
@@ -15,7 +15,7 @@ void RegisterHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     
     spdlog::info("Registering client: {}", client_name);
     
-    // Проверяем, не зарегистрирован ли уже клиент (как в оригинале)
+    // Проверяем, не зарегистрирован ли уже клиент
     auto existing_session = ctx.session_manager.FindSession(client_name);
     if (existing_session) {
         spdlog::warn("Client {} already registered, replacing old session", client_name);
@@ -57,7 +57,7 @@ void RegisterHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     if (ctx.session_manager.RegisterClient(client_name, session)) {
         spdlog::info("Client {} registered successfully", client_name);
         
-        // Доставляем оффлайн сообщения (как в оригинале)
+        // Доставляем оффлайн сообщения
         ctx.session_manager.DeliverOfflineMessages(client_name);
         ctx.session_manager.DeliverPendingReplies(client_name);
     } else {
@@ -67,7 +67,6 @@ void RegisterHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     ctx.session_manager.PrintActiveClients();
 }
 
-// src/message_handler.cpp
 void MessageHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     const std::string& destination = msg.GetDestination();
     
@@ -115,7 +114,6 @@ void MessageHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     }
 }
 
-// src/message_handler.cpp
 void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     spdlog::debug("Handling reply with correlation_id: {}", msg.GetCorrelationId());
     
@@ -159,7 +157,9 @@ void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     spdlog::info("Reply {} stored in database for later delivery to {}", message_id, destination);
 }
 
-// src/message_handler.cpp
+// ================================================================
+// ИСПРАВЛЕННЫЙ AckHandler - теперь отправляет ACK оригинальному отправителю
+// ================================================================
 void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     spdlog::debug("Handling ACK for correlation_id: {}", msg.GetCorrelationId());
     
@@ -171,6 +171,9 @@ void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     }
     
     const std::string& ack_sender = msg.GetSender();
+    
+    // Ищем оригинального отправителя (кому нужно отправить ACK-уведомление)
+    std::string original_sender = ctx.storage.FindOriginalSenderByCorrelation(acked_correlation_id);
     
     // Ищем сообщение по correlation_id
     uint64_t message_id = ctx.storage.FindMessageIdByCorrelation(acked_correlation_id);
@@ -195,6 +198,41 @@ void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
         if (ctx.metrics) {
             ctx.metrics->IncrementAcksReceived();
         }
+        
+        // ========== ДОБАВЛЕНО: Отправка ACK оригинальному отправителю ==========
+        if (!original_sender.empty()) {
+            auto session = ctx.session_manager.FindSession(original_sender);
+            if (session && session->IsOnline()) {
+                // Создаем ACK-уведомление для отправки оригинальному отправителю
+                Message ack_notification;
+                ack_notification.SetType(MessageType::Ack);
+                ack_notification.SetSender(ack_sender);  // Кто отправил ACK
+                ack_notification.SetDestination(original_sender);
+                ack_notification.SetCorrelationId(acked_correlation_id);
+                
+                if (session->SendMessage(ack_notification)) {
+                    spdlog::debug("ACK notification sent to original sender: {}", original_sender);
+                } else {
+                    spdlog::warn("Failed to send ACK notification to {}", original_sender);
+                }
+            } else {
+                // Если отправитель офлайн, сохраняем ACK как pending сообщение
+                spdlog::debug("Original sender {} offline, storing ACK notification", original_sender);
+                
+                Message ack_notification;
+                ack_notification.SetType(MessageType::Ack);
+                ack_notification.SetSender(ack_sender);
+                ack_notification.SetDestination(original_sender);
+                ack_notification.SetCorrelationId(acked_correlation_id);
+                
+                uint64_t ack_msg_id = ctx.storage.SaveMessage(ack_notification);
+                spdlog::debug("ACK notification stored in database with id: {}", ack_msg_id);
+            }
+        } else {
+            spdlog::debug("No original sender found for correlation_id={}, ACK notification not sent", 
+                          acked_correlation_id);
+        }
+        // =====================================================================
     } else {
         spdlog::debug("Message {} does not require ACK, ignoring", message_id);
     }

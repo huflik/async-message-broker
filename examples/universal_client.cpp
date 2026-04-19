@@ -1,3 +1,4 @@
+// examples/universal_client.cpp
 #include <zmq.hpp>
 #include <iostream>
 #include <string>
@@ -13,10 +14,14 @@
 #include <mutex>
 #include <cstring>
 #include <arpa/inet.h>
+#include <algorithm>
 
 // Protocol constants (must match broker)
 constexpr uint8_t PROTOCOL_VERSION = 1;
 constexpr size_t HEADER_SIZE = 15;
+
+// Глобальный флаг отладки
+static bool g_debug = false;
 
 enum class MessageType : uint8_t {
     Register = 1,
@@ -33,19 +38,19 @@ enum MessageFlag : uint8_t {
 };
 
 // Serialization helpers
-uint64_t HostToNetwork64(uint64_t host) {
+inline uint64_t HostToNetwork64(uint64_t host) {
     return __builtin_bswap64(host);
 }
 
-uint64_t NetworkToHost64(uint64_t net) {
+inline uint64_t NetworkToHost64(uint64_t net) {
     return __builtin_bswap64(net);
 }
 
-uint16_t HostToNetwork16(uint16_t host) {
+inline uint16_t HostToNetwork16(uint16_t host) {
     return htons(host);
 }
 
-uint16_t NetworkToHost16(uint16_t net) {
+inline uint16_t NetworkToHost16(uint16_t net) {
     return ntohs(net);
 }
 
@@ -117,6 +122,10 @@ public:
         uint16_t payload_len = NetworkToHost16(net_payload_len);
         pos += 2;
         
+        if (data.size() != HEADER_SIZE + sender_len + dest_len + payload_len) {
+            throw std::runtime_error("Message size mismatch");
+        }
+        
         msg.sender.assign(reinterpret_cast<const char*>(&data[pos]), sender_len);
         pos += sender_len;
         
@@ -131,6 +140,26 @@ public:
     std::string PayloadToString() const {
         return std::string(payload.begin(), payload.end());
     }
+    
+    std::string ToString() const {
+        std::stringstream ss;
+        ss << "Message{type=";
+        switch (type) {
+            case MessageType::Register: ss << "Register"; break;
+            case MessageType::Message: ss << "Message"; break;
+            case MessageType::Reply: ss << "Reply"; break;
+            case MessageType::Ack: ss << "Ack"; break;
+            case MessageType::Unregister: ss << "Unregister"; break;
+            default: ss << static_cast<int>(type); break;
+        }
+        ss << ", flags=" << (int)flags
+           << ", corr_id=" << correlation_id
+           << ", sender=" << sender
+           << ", dest=" << destination
+           << ", payload_size=" << payload.size()
+           << "}";
+        return ss.str();
+    }
 };
 
 class UniversalClient {
@@ -141,14 +170,10 @@ public:
         , client_name_(client_name)
         , running_(true)
     {
-        // Set identity
         socket_.set(zmq::sockopt::routing_id, client_name);
-        
-        // Connect to broker
         socket_.connect(broker_address);
         std::cout << "Connected to broker at " << broker_address << std::endl;
         
-        // Generate unique correlation IDs
         std::random_device rd;
         rng_.seed(rd());
     }
@@ -158,27 +183,21 @@ public:
     }
     
     void Run() {
-        // Register first
         Register();
-        
-        // Start receiver thread
         receiver_thread_ = std::thread(&UniversalClient::ReceiverLoop, this);
         
-        // Main loop - process commands
         PrintHelp();
         std::string line;
         while (running_) {
-            std::cout << "\n[" << client_name_ << "] > " << std::flush;
+            std::cout << "[" << client_name_ << "] > " << std::flush;
             if (!std::getline(std::cin, line)) {
                 break;
             }
             
             if (line.empty()) continue;
-            
             ProcessCommand(line);
         }
         
-        // Unregister before exit
         Unregister();
     }
     
@@ -205,6 +224,7 @@ private:
         std::cout << "  send <dest> <message>     - Send message to destination" << std::endl;
         std::cout << "  send_ack <dest> <msg>     - Send message requiring ACK" << std::endl;
         std::cout << "  request <dest> <message>  - Send request and wait for reply" << std::endl;
+        std::cout << "  reply <corr_id> <message> - Manually reply to a request" << std::endl;
         std::cout << "  status                    - Show client status" << std::endl;
         std::cout << "  help                      - Show this help" << std::endl;
         std::cout << "  quit                      - Exit client" << std::endl;
@@ -221,7 +241,7 @@ private:
             iss >> dest;
             std::getline(iss, message);
             if (!dest.empty() && !message.empty()) {
-                message = message.substr(1); // Remove leading space
+                message = message.substr(1);
                 SendMessage(dest, message, false, false);
             } else {
                 std::cout << "Usage: send <destination> <message>" << std::endl;
@@ -247,6 +267,18 @@ private:
                 SendMessage(dest, message, true, false);
             } else {
                 std::cout << "Usage: request <destination> <message>" << std::endl;
+            }
+        }
+        else if (cmd == "reply") {
+            std::string corr_id_str, message;
+            iss >> corr_id_str;
+            std::getline(iss, message);
+            if (!corr_id_str.empty() && !message.empty()) {
+                message = message.substr(1);
+                uint64_t corr_id = std::stoull(corr_id_str);
+                SendManualReply(corr_id, message);
+            } else {
+                std::cout << "Usage: reply <correlation_id> <message>" << std::endl;
             }
         }
         else if (cmd == "status") {
@@ -331,6 +363,18 @@ private:
                   << " [id=" << reply.correlation_id << "]: " << text << std::endl;
     }
     
+    void SendManualReply(uint64_t correlation_id, const std::string& text) {
+        Message reply;
+        reply.type = MessageType::Reply;
+        reply.sender = client_name_;
+        reply.destination = "";
+        reply.correlation_id = correlation_id;
+        reply.payload = std::vector<uint8_t>(text.begin(), text.end());
+        
+        SendRawMessage(reply);
+        std::cout << "Sent manual reply [id=" << correlation_id << "]: " << text << std::endl;
+    }
+    
     void SendAck(uint64_t correlation_id, const std::string& original_sender) {
         Message ack;
         ack.type = MessageType::Ack;
@@ -343,6 +387,9 @@ private:
     }
     
     void SendRawMessage(const Message& msg) {
+        if (g_debug) {
+            std::cout << "[DEBUG] Sending: " << msg.ToString() << std::endl;
+        }
         auto data = msg.Serialize();
         zmq::message_t zmq_msg(data.data(), data.size());
         socket_.send(zmq_msg, zmq::send_flags::none);
@@ -354,6 +401,17 @@ private:
             auto result = socket_.recv(zmq_msg, zmq::recv_flags::dontwait);
             
             if (result) {
+                // Пропускаем только ПОЛНОСТЬЮ пустые фреймы (delimiter)
+                if (zmq_msg.size() == 0) {
+                    if (g_debug) {
+                        std::cout << "\r[DEBUG] Skipping empty delimiter frame" << std::endl;
+                        std::cout << "[" << client_name_ << "] > " << std::flush;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    continue;
+                }
+                
+                // Пытаемся десериализовать ВСЕ непустые сообщения
                 try {
                     std::vector<uint8_t> data(
                         static_cast<uint8_t*>(zmq_msg.data()),
@@ -361,9 +419,23 @@ private:
                     );
                     
                     Message msg = Message::Deserialize(data);
+                    
+                    if (g_debug) {
+                        std::cout << "\r[DEBUG] Received: " << msg.ToString() << std::endl;
+                    }
+                    
+                    // Очищаем текущую строку и выводим сообщение
+                    std::cout << "\r" << std::string(50, ' ') << "\r";
                     HandleMessage(msg);
+                    std::cout << "[" << client_name_ << "] > " << std::flush;
+                    
                 } catch (const std::exception& e) {
-                    std::cerr << "Error parsing message: " << e.what() << std::endl;
+                    // Выводим ошибку только в debug режиме
+                    if (g_debug) {
+                        std::cerr << "\r[DEBUG] Parse error: " << e.what() 
+                                  << " (size=" << zmq_msg.size() << ")" << std::endl;
+                        std::cout << "[" << client_name_ << "] > " << std::flush;
+                    }
                 }
             }
             
@@ -383,7 +455,6 @@ private:
                     SendAck(msg.correlation_id, msg.sender);
                 }
                 
-                // Auto-reply for demonstration
                 if (msg.flags & FlagNeedsReply) {
                     std::string reply_text = "Auto-reply to: " + payload_str;
                     SendReply(msg, reply_text);
@@ -401,15 +472,18 @@ private:
                 break;
                 
             case MessageType::Ack:
-                std::cout << "\n[ACK] Message delivered to " << msg.sender 
-                          << " [id=" << msg.correlation_id << "]" << std::endl;
+                // ЯВНЫЙ ВЫВОД ACK
+                std::cout << "\n[ACK] Message " << msg.correlation_id 
+                          << " delivered to " << msg.sender << std::endl;
                 break;
                 
             default:
+                if (g_debug) {
+                    std::cout << "\n[DEBUG] Unknown message type: " 
+                              << static_cast<int>(msg.type) << std::endl;
+                }
                 break;
         }
-        
-        std::cout << "[" << client_name_ << "] > " << std::flush;
     }
     
     void ShowStatus() {
@@ -428,13 +502,21 @@ private:
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <broker_address> <client_name>" << std::endl;
-        std::cerr << "Example: " << argv[0] << " tcp://localhost:5555 client1" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <broker_address> <client_name> [--debug]" << std::endl;
+        std::cerr << "Example: " << argv[0] << " tcp://localhost:5555 alice" << std::endl;
+        std::cerr << "         " << argv[0] << " tcp://localhost:5555 bob --debug" << std::endl;
         return 1;
     }
     
     std::string broker_address = argv[1];
     std::string client_name = argv[2];
+    
+    for (int i = 3; i < argc; i++) {
+        if (std::string(argv[i]) == "--debug") {
+            g_debug = true;
+            std::cout << "Debug mode enabled" << std::endl;
+        }
+    }
     
     try {
         UniversalClient client(broker_address, client_name);
