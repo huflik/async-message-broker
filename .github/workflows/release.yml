@@ -5,30 +5,25 @@ on:
     branches:
       - main
       - master
-  workflow_dispatch:   # Возможность ручного запуска
-
-env:
-  PACKAGE_NAME: async-message-broker
-  DESCRIPTION: "Async Message Broker with guaranteed delivery and Prometheus metrics"
-  MAINTAINER: "Your Name <your.email@example.com>"
+  workflow_dispatch:
 
 jobs:
-  # ============================================================================
-  # Этап 1: Сборка и тестирование
-  # ============================================================================
-  test:
-    runs-on: ubuntu-22.04
-    container:
-      image: ubuntu:22.04
-      
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
     steps:
-      - name: Install System Dependencies
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      
+      - name: Install dependencies
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            build-essential \
+          sudo apt-get update
+          sudo apt-get install -y \
             cmake \
-            git \
+            build-essential \
             pkg-config \
             libzmq3-dev \
             libboost-system-dev \
@@ -36,306 +31,100 @@ jobs:
             libspdlog-dev \
             zlib1g-dev \
             libcurl4-openssl-dev \
-            libgtest-dev \
-            libgmock-dev \
-            wget \
-            g++ \
-            make
-
-      - name: Prepare GTest and GMock
-        run: |
-          # Устанавливаем заголовки GTest и GMock в системные директории
-          mkdir -p /usr/local/include/gtest
-          mkdir -p /usr/local/include/gmock
-          
-          # Копируем заголовки GTest
-          cp -r /usr/src/gtest/include/gtest/* /usr/local/include/gtest/
-          
-          # Копируем заголовки GMock (если они есть в googletest)
-          if [ -d /usr/src/googletest/googlemock/include/gmock ]; then
-            cp -r /usr/src/googletest/googlemock/include/gmock/* /usr/local/include/gmock/
-          elif [ -d /usr/src/gmock ]; then
-            cp -r /usr/src/gmock/include/gmock/* /usr/local/include/gmock/
-          fi
-          
-          # Собираем библиотеки
-          cd /usr/src/gtest
-          cmake CMakeLists.txt
-          make
-          cp lib/libgtest.a /usr/local/lib/
-          cp lib/libgtest_main.a /usr/local/lib/
-          
-          # Собираем GMock если есть отдельно
-          if [ -d /usr/src/gmock ]; then
-            cd /usr/src/gmock
-            cmake CMakeLists.txt
-            make
-            cp lib/libgmock.a /usr/local/lib/
-            cp lib/libgmock_main.a /usr/local/lib/
-          fi
-          
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Build prometheus-cpp (Static Build)
-        run: |
-          git clone --recursive https://github.com/jupp0r/prometheus-cpp.git
-          cd prometheus-cpp
-          git checkout v1.2.4
-          git submodule update --init --recursive
-          
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/usr/local \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DENABLE_TESTING=OFF \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DUSE_THIRDPARTY_LIBRARIES=ON \
-            -DENABLE_COMPRESSION=ON
-          make -j$(nproc)
-          make install
-          cd ../..
-          rm -rf prometheus-cpp
-
-      - name: Configure CMake Project (with Tests)
-        run: |
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_INSTALL_PREFIX=/usr \
-            -DBUILD_EXAMPLES=OFF \
-            -DWITH_GTEST=ON \
-            -DGTEST_ROOT=/usr/local \
-            -DGMOCK_ROOT=/usr/local
-          
-      - name: Build Project
-        run: |
-          cd build
-          make -j$(nproc)
-          
-      - name: Run Tests
-        run: |
-          cd build
-          ctest --output-on-failure --verbose
-          
-      - name: Upload Test Results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: |
-            build/Testing/
-            build/*.log
-
-  # ============================================================================
-  # Этап 2: Сборка DEB пакета (только если тесты прошли)
-  # ============================================================================
-  package:
-    needs: test  # Зависит от успешного выполнения тестов
-    runs-on: ubuntu-22.04
-    container:
-      image: ubuntu:22.04
-      
-    steps:
-      - name: Install System Dependencies
-        run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            build-essential \
-            cmake \
-            git \
-            pkg-config \
-            libzmq3-dev \
-            libboost-system-dev \
-            libsqlite3-dev \
-            libspdlog-dev \
-            zlib1g-dev \
-            libcurl4-openssl-dev \
-            wget \
             ruby \
             ruby-dev \
-            rubygems \
-            g++ \
-            make \
-            file
-
-      - name: Install fpm (Package Builder)
-        run: gem install fpm
-          
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Build prometheus-cpp (Static Build)
+            rubygems
+      
+      - name: Install fpm
+        run: sudo gem install fpm
+      
+      - name: Build prometheus-cpp
         run: |
           git clone --recursive https://github.com/jupp0r/prometheus-cpp.git
           cd prometheus-cpp
           git checkout v1.2.4
-          git submodule update --init --recursive
-          
           mkdir build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr/local \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DENABLE_TESTING=OFF \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DUSE_THIRDPARTY_LIBRARIES=ON \
-            -DENABLE_COMPRESSION=ON
+            -DBUILD_SHARED_LIBS=OFF
           make -j$(nproc)
-          make install
+          sudo make install
           cd ../..
-          rm -rf prometheus-cpp
-
-      - name: Configure CMake Project (Release, No Tests)
+      
+      - name: Configure CMake
         run: |
-          mkdir build && cd build
-          cmake .. \
+          cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr \
-            -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
-            -DBUILD_EXAMPLES=OFF \
-            -DWITH_GTEST=OFF
-          
-      - name: Build Project
+            -DWITH_GTEST=OFF \
+            -DBUILD_EXAMPLES=OFF
+      
+      - name: Build project
+        run: cmake --build build --config Release -j $(nproc)
+      
+      - name: Create DEB package structure
         run: |
-          cd build
-          make -j$(nproc)
+          mkdir -p pkg/DEBIAN
+          mkdir -p pkg/usr/bin
+          mkdir -p pkg/lib/systemd/system
           
-      - name: Strip Binary (Reduce Size)
-        run: |
-          strip build/broker || true
+          # Копируем бинарник
+          cp build/broker pkg/usr/bin/
           
-      - name: Prepare Package Directory
-        run: |
-          cd build
-          make install DESTDIR=../pkg-dir
-          cd ..
+          # Создаем control файл
+          cat > pkg/DEBIAN/control << EOF
+          Package: async-message-broker
+          Version: 1.0.${{ github.run_number }}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Your Name <your.email@example.com>
+          Description: Async Message Broker with guaranteed delivery
+           High-performance message broker with ZeroMQ transport,
+           SQLite persistence, and Prometheus metrics support.
+          EOF
           
-          mkdir -p pkg-dir/lib/systemd/system
-          mkdir -p pkg-dir/usr/share/doc/${PACKAGE_NAME}
-          mkdir -p pkg-dir/DEBIAN
-          
-          cp README.md pkg-dir/usr/share/doc/${PACKAGE_NAME}/ || true
-
-      - name: Create systemd service file
-        run: |
-          cat > pkg-dir/lib/systemd/system/${PACKAGE_NAME}.service << 'EOF'
+          # Создаем systemd service
+          cat > pkg/lib/systemd/system/async-message-broker.service << EOF
           [Unit]
-          Description=Async Message Broker with guaranteed delivery and Prometheus metrics
+          Description=Async Message Broker
           After=network.target
           
           [Service]
           Type=simple
-          User=broker
-          Group=broker
-          ExecStart=/usr/bin/broker --port 5555 --db-path /var/lib/broker/broker.db
+          ExecStart=/usr/bin/broker
           Restart=on-failure
-          RestartSec=5
-          
-          NoNewPrivileges=yes
-          PrivateTmp=yes
-          ProtectSystem=full
-          ProtectHome=yes
-          
-          RuntimeDirectory=broker
-          StateDirectory=broker
           
           [Install]
           WantedBy=multi-user.target
           EOF
-
-      - name: Create postinst script
+      
+      - name: Build DEB package
         run: |
-          cat > pkg-dir/DEBIAN/postinst << 'EOF'
-          #!/bin/sh
-          set -e
-          if [ "$1" = "configure" ]; then
-              if ! getent passwd broker > /dev/null; then
-                  useradd --system --user-group --no-create-home --shell /usr/sbin/nologin broker
-              fi
-              chown -R broker:broker /var/lib/broker
-              chmod 750 /var/lib/broker
-              systemctl daemon-reload
-              systemctl enable async-message-broker.service
-          fi
-          EOF
-          chmod 755 pkg-dir/DEBIAN/postinst
-
-      - name: Create prerm script
-        run: |
-          cat > pkg-dir/DEBIAN/prerm << 'EOF'
-          #!/bin/sh
-          set -e
-          if [ "$1" = "remove" ]; then
-              systemctl stop async-message-broker.service || true
-              systemctl disable async-message-broker.service || true
-          fi
-          EOF
-          chmod 755 pkg-dir/DEBIAN/prerm
-
-      - name: Generate Version
-        id: version
-        shell: bash
-        run: |
-          # Генерируем версию на основе даты и короткого SHA коммита
-          VERSION="1.0.0-$(date +%Y%m%d)-${GITHUB_SHA::7}"
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "Version set to: $VERSION"
-
-      - name: Build DEB Package with fpm
-        run: |
-          fpm \
-            -s dir \
-            -t deb \
-            -n "${PACKAGE_NAME}" \
-            -v "${VERSION}" \
-            --iteration "1" \
-            --license "MIT" \
-            --vendor "Your Organization" \
-            --maintainer "${MAINTAINER}" \
-            --description "${DESCRIPTION}" \
-            --url "https://github.com/${GITHUB_REPOSITORY}" \
-            --deb-no-default-config-files \
-            --depends "libzmq5" \
-            --depends "libboost-system1.74.0" \
-            --depends "libsqlite3-0" \
-            --depends "libstdc++6" \
-            --depends "libc6" \
-            -C ./pkg-dir \
-            .
-          
-      - name: List Package Files
-        run: |
-          ls -la *.deb
-          echo "Package info:"
-          dpkg --info *.deb
-
-      - name: Upload DEB Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.PACKAGE_NAME }}-${{ env.VERSION }}-deb-package
-          path: ./*.deb
-          retention-days: 30  # Храним артефакты 30 дней
-
+          dpkg-deb --build pkg
+          mv pkg.deb async-message-broker-${{ github.run_number }}.deb
+      
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'push'
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: build-${{ github.run_number }}
-          name: "Build #${{ github.run_number }} - ${{ env.VERSION }}"
-          body: |
-            ## Automated Build
-            
-            - **Commit:** ${{ github.sha }}
-            - **Branch:** ${{ github.ref_name }}
-            - **Build Date:** $(date +'%Y-%m-%d %H:%M:%S')
-            - **Version:** ${{ env.VERSION }}
-            
-            ### Installation
-            ```bash
-            sudo dpkg -i ${{ env.PACKAGE_NAME }}_${{ env.VERSION }}_amd64.deb
-            sudo systemctl start ${{ env.PACKAGE_NAME }}
+          tag_name: v1.0.${{ github.run_number }}
+          release_name: Release v1.0.${{ github.run_number }}
+          draft: false
+          prerelease: false
+      
+      - name: Upload Release Asset
+        if: steps.create_release.outputs.id != ''
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./async-message-broker-${{ github.run_number }}.deb
+          asset_name: async-message-broker.deb
+          asset_content_type: application/vnd.debian.binary-package
