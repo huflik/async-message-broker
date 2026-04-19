@@ -2,8 +2,8 @@ name: Build and Package DEB
 
 on:
   push:
-    #tags:
-      #- 'v*'           # Запуск при публикации тега версии (например, v1.0.0)
+    tags:
+      - 'v*'           # Запуск при публикации тега версии (например, v1.0.0)
   workflow_dispatch:   # Возможность ручного запуска
 
 env:
@@ -48,15 +48,22 @@ jobs:
 
       - name: Build prometheus-cpp (Static Build)
         run: |
-          git clone https://github.com/jupp0r/prometheus-cpp.git
+          # Клонируем с подмодулями (civetweb нужен для pull-модуля)
+          git clone --recursive https://github.com/jupp0r/prometheus-cpp.git
           cd prometheus-cpp
           git checkout v1.2.4
+          
+          # На всякий случай обновляем подмодули еще раз
+          git submodule update --init --recursive
+          
           mkdir build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DENABLE_TESTING=OFF \
-            -DBUILD_SHARED_LIBS=OFF
+            -DBUILD_SHARED_LIBS=OFF \
+            -DUSE_THIRDPARTY_LIBRARIES=ON
           make -j$(nproc)
           make install
           cd ../..
