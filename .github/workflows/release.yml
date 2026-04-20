@@ -68,7 +68,7 @@ jobs:
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Debug \
             -DWITH_GTEST=ON \
-            -DBUILD_EXAMPLES=OFF
+            -DBUILD_EXAMPLES=ON
       
       - name: Build tests
         run: cmake --build build --config Debug -j $(nproc)
@@ -136,7 +136,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DWITH_GTEST=OFF \
-            -DBUILD_EXAMPLES=OFF
+            -DBUILD_EXAMPLES=ON
       
       - name: Build project
         run: cmake --build build --config Release -j $(nproc)
@@ -147,7 +147,7 @@ jobs:
           mkdir -p pkg/usr/bin
           mkdir -p pkg/usr/share/doc/async-message-broker
           
-          # Копируем бинарник
+          # Копируем бинарник брокера
           if [ -f "build/broker" ]; then
             cp build/broker pkg/usr/bin/
           elif [ -f "build/src/broker" ]; then
@@ -156,6 +156,15 @@ jobs:
             echo "ERROR: broker executable not found!"
             find build -name "broker" -type f
             exit 1
+          fi
+          
+          # Копируем универсального клиента
+          if [ -f "build/universal_client" ]; then
+            cp build/universal_client pkg/usr/bin/universal_client
+          elif [ -f "build/examples/universal_client" ]; then
+            cp build/examples/universal_client pkg/usr/bin/universal_client
+          else
+            echo "WARNING: universal_client not found, skipping..."
           fi
           
           # Копируем README если есть
@@ -189,6 +198,10 @@ jobs:
           echo "Run: broker --help"
           echo "Example: broker --port 5555 --db-path /var/lib/async-message-broker/broker.db"
           echo ""
+          echo "=== Universal Client ==="
+          echo "Run: universal_client <broker_address> <client_name>"
+          echo "Example: universal_client tcp://localhost:5555 alice"
+          echo ""
           EOF
           chmod 755 pkg/DEBIAN/postinst
       
@@ -220,3 +233,4 @@ jobs:
             ```bash
             sudo dpkg -i async-message-broker.deb
             broker --help
+            universal_client --help
