@@ -30,7 +30,21 @@ jobs:
             libsqlite3-dev \
             libspdlog-dev \
             zlib1g-dev \
-            libcurl4-openssl-dev
+            libcurl4-openssl-dev \
+            libgtest-dev \
+            libgmock-dev
+      
+      - name: Build GTest and GMock
+        run: |
+          cd /usr/src/gtest
+          sudo cmake CMakeLists.txt
+          sudo make
+          sudo cp lib/*.a /usr/lib
+          
+          if [ ! -f /usr/lib/libgmock.a ]; then
+            sudo ln -s /usr/lib/libgtest.a /usr/lib/libgmock.a
+            sudo ln -s /usr/lib/libgtest_main.a /usr/lib/libgmock_main.a
+          fi
       
       - name: Build prometheus-cpp
         run: |
@@ -47,7 +61,22 @@ jobs:
           sudo make install
           cd ../..
       
-      - name: Configure CMake
+      - name: Configure CMake for Tests
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DWITH_GTEST=ON \
+            -DBUILD_EXAMPLES=ON
+      
+      - name: Build tests
+        run: cmake --build build --config Debug -j $(nproc)
+      
+      - name: Run tests
+        run: |
+          cd build
+          ctest --output-on-failure --verbose
+      
+      - name: Configure CMake for Release
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -75,18 +104,13 @@ jobs:
             exit 1
           fi
           
-          # Копируем universal_client (правильные пути)
+          # Копируем universal_client
           if [ -f "build/src/universal_client" ]; then
             cp build/src/universal_client pkg/usr/bin/
-            echo "universal_client copied from build/src/universal_client"
           elif [ -f "build/universal_client" ]; then
             cp build/universal_client pkg/usr/bin/
-            echo "universal_client copied from build/universal_client"
           elif [ -f "build/examples/universal_client" ]; then
             cp build/examples/universal_client pkg/usr/bin/
-            echo "universal_client copied from build/examples/universal_client"
-          else
-            echo "WARNING: universal_client not found"
           fi
           
           # Копируем README если есть
@@ -110,7 +134,7 @@ jobs:
           EOF
           
           # Создаем postinst скрипт
-          cat > pkg/DEBIAN/postinst << EOF
+          cat > pkg/DEBIAN/postinst << 'EOF'
           #!/bin/sh
           set -e
           mkdir -p /var/lib/async-message-broker
