@@ -42,7 +42,6 @@ jobs:
           sudo make
           sudo cp lib/*.a /usr/lib
           
-          # Симлинки для GMock если нужно
           if [ ! -f /usr/lib/libgmock.a ]; then
             sudo ln -s /usr/lib/libgtest.a /usr/lib/libgmock.a
             sudo ln -s /usr/lib/libgtest_main.a /usr/lib/libgmock_main.a
@@ -88,7 +87,7 @@ jobs:
             build/*.log
 
   # ============================================================================
-  # Этап 2: Сборка DEB пакета (только если тесты прошли)
+  # Этап 2: Сборка DEB пакета
   # ============================================================================
   package:
     needs: test
@@ -147,7 +146,6 @@ jobs:
           mkdir -p pkg/usr/bin
           mkdir -p pkg/usr/share/doc/async-message-broker
           
-          # Копируем бинарник брокера
           if [ -f "build/broker" ]; then
             cp build/broker pkg/usr/bin/
           elif [ -f "build/src/broker" ]; then
@@ -158,21 +156,20 @@ jobs:
             exit 1
           fi
           
-          # Копируем универсального клиента
           if [ -f "build/universal_client" ]; then
-            cp build/universal_client pkg/usr/bin/universal_client
+            cp build/universal_client pkg/usr/bin/
+            echo "universal_client copied to package"
           elif [ -f "build/examples/universal_client" ]; then
-            cp build/examples/universal_client pkg/usr/bin/universal_client
+            cp build/examples/universal_client pkg/usr/bin/
+            echo "universal_client copied from examples to package"
           else
-            echo "WARNING: universal_client not found, skipping..."
+            echo "WARNING: universal_client not found, continuing without it"
           fi
           
-          # Копируем README если есть
           if [ -f "README.md" ]; then
             cp README.md pkg/usr/share/doc/async-message-broker/
           fi
           
-          # Создаем control файл
           cat > pkg/DEBIAN/control << EOF
           Package: async-message-broker
           Version: 1.0.${{ github.run_number }}
@@ -187,8 +184,7 @@ jobs:
            Run with: broker --port 5555 --db-path /path/to/db
           EOF
           
-          # Создаем postinst скрипт
-          cat > pkg/DEBIAN/postinst << EOF
+          cat > pkg/DEBIAN/postinst << 'EOF'
           #!/bin/sh
           set -e
           mkdir -p /var/lib/async-message-broker
@@ -197,10 +193,12 @@ jobs:
           echo "=== Async Message Broker installed ==="
           echo "Run: broker --help"
           echo "Example: broker --port 5555 --db-path /var/lib/async-message-broker/broker.db"
-          echo ""
-          echo "=== Universal Client ==="
-          echo "Run: universal_client <broker_address> <client_name>"
-          echo "Example: universal_client tcp://localhost:5555 alice"
+          if [ -f /usr/bin/universal_client ]; then
+            echo ""
+            echo "=== Universal Client ==="
+            echo "Run: universal_client <broker_address> <client_name>"
+            echo "Example: universal_client tcp://localhost:5555 alice"
+          fi
           echo ""
           EOF
           chmod 755 pkg/DEBIAN/postinst
@@ -208,20 +206,25 @@ jobs:
       - name: Build DEB package
         run: |
           dpkg-deb --build pkg
-          mv pkg.deb async-message-broker-${{ github.run_number }}.deb
+          DEB_NAME="async-message-broker-${{ github.run_number }}.deb"
+          mv pkg.deb $DEB_NAME
+          echo "DEB_NAME=$DEB_NAME" >> $GITHUB_ENV
           echo "=== DEB package created ==="
           ls -la *.deb
-          dpkg --info *.deb
+          dpkg --info $DEB_NAME
       
-      - name: Create Release
+      - name: Upload DEB as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: async-message-broker-deb
+          path: ${{ env.DEB_NAME }}
+      
+      - name: Create Release and Upload DEB
         if: github.event_name == 'push'
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
           tag_name: v1.0.${{ github.run_number }}
-          release_name: Release v1.0.${{ github.run_number }}
+          name: Release v1.0.${{ github.run_number }}
           body: |
             ## Automated Build with Tests
             
@@ -231,6 +234,5 @@ jobs:
             
             ### Installation
             ```bash
-            sudo dpkg -i async-message-broker.deb
+            sudo dpkg -i async-message-broker-${{ github.run_number }}.deb
             broker --help
-            universal_client --help
