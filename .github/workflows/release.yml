@@ -58,18 +58,6 @@ jobs:
       - name: Build project
         run: cmake --build build --config Release -j $(nproc)
       
-      - name: Debug - List built files
-        run: |
-          echo "=== Looking for broker ==="
-          find build -name "broker" -type f 2>/dev/null || echo "broker not found"
-          echo "=== Looking for universal_client ==="
-          find build -name "universal_client" -type f 2>/dev/null || echo "universal_client not found"
-          echo "=== Full build directory structure ==="
-          ls -la build/
-          if [ -d "build/examples" ]; then
-            ls -la build/examples/
-          fi
-      
       - name: Create DEB package structure
         run: |
           mkdir -p pkg/DEBIAN
@@ -79,27 +67,26 @@ jobs:
           # Копируем бинарник брокера
           if [ -f "build/broker" ]; then
             cp build/broker pkg/usr/bin/
-            echo "broker copied from build/broker"
           elif [ -f "build/src/broker" ]; then
             cp build/src/broker pkg/usr/bin/
-            echo "broker copied from build/src/broker"
           else
             echo "ERROR: broker executable not found!"
+            find build -name "broker" -type f
             exit 1
           fi
           
-          # Копируем universal_client (ищем везде)
-          if [ -f "build/universal_client" ]; then
+          # Копируем universal_client (правильные пути)
+          if [ -f "build/src/universal_client" ]; then
+            cp build/src/universal_client pkg/usr/bin/
+            echo "universal_client copied from build/src/universal_client"
+          elif [ -f "build/universal_client" ]; then
             cp build/universal_client pkg/usr/bin/
             echo "universal_client copied from build/universal_client"
           elif [ -f "build/examples/universal_client" ]; then
             cp build/examples/universal_client pkg/usr/bin/
             echo "universal_client copied from build/examples/universal_client"
-          elif [ -f "universal_client" ]; then
-            cp universal_client pkg/usr/bin/
-            echo "universal_client copied from root"
           else
-            echo "WARNING: universal_client not found, building without it"
+            echo "WARNING: universal_client not found"
           fi
           
           # Копируем README если есть
@@ -123,7 +110,7 @@ jobs:
           EOF
           
           # Создаем postinst скрипт
-          cat > pkg/DEBIAN/postinst << 'EOF'
+          cat > pkg/DEBIAN/postinst << EOF
           #!/bin/sh
           set -e
           mkdir -p /var/lib/async-message-broker
