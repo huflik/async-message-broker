@@ -1,4 +1,3 @@
-// tests/test_storage.cpp
 #include <gtest/gtest.h>
 #include <filesystem>
 #include "storage.hpp"
@@ -44,7 +43,6 @@ TEST_F(StorageTest, MarkDelivered) {
     uint64_t id = storage->SaveMessage(CreateTestMessage());
     storage->MarkDelivered(id);
     
-    // После доставки сообщение не должно быть в pending
     auto pending = storage->LoadPendingMessagesOnly("bob");
     EXPECT_TRUE(pending.empty());
 }
@@ -53,23 +51,18 @@ TEST_F(StorageTest, MarkSent) {
     uint64_t id = storage->SaveMessage(CreateTestMessage());
     storage->MarkSent(id);
     
-    // Проверяем, что NeedsAck возвращает true
     EXPECT_TRUE(storage->NeedsAck(id));
 }
 
 TEST_F(StorageTest, NeedsAck) {
-    // Создаем сообщение с флагом NeedsAck
     Message msg(MessageType::Message, FlagNeedsAck, 12345, "alice", "bob", {});
     
     uint64_t id1 = storage->SaveMessage(msg);
     
-    // ВАЖНО: Сначала помечаем как SENT
     storage->MarkSent(id1);
     
-    // Теперь NeedsAck должен вернуть true
     EXPECT_TRUE(storage->NeedsAck(id1));
     
-    // Создаем сообщение без флага NeedsAck
     Message msg2(MessageType::Message, FlagNone, 12346, "alice", "bob", {});
     uint64_t id2 = storage->SaveMessage(msg2);
     storage->MarkSent(id2);
@@ -94,7 +87,6 @@ TEST_F(StorageTest, MarkAckReceivedFromOriginalSender) {
     
     storage->MarkAckReceived(msg_id, "alice");
     
-    // Корреляция должна быть удалена
     std::string sender = storage->FindOriginalSenderByCorrelation(12345);
     EXPECT_TRUE(sender.empty());
 }
@@ -105,16 +97,13 @@ TEST_F(StorageTest, MarkAckReceivedFromWrongSender) {
     
     storage->MarkAckReceived(msg_id, "bob");
     
-    // Корреляция должна сохраниться
     std::string sender = storage->FindOriginalSenderByCorrelation(12345);
     EXPECT_EQ(sender, "alice");
 }
 
 TEST_F(StorageTest, LoadPendingMessagesOnly) {
-    // Сохраняем обычное сообщение для bob
     storage->SaveMessage(CreateTestMessage(MessageType::Message, 111, "alice", "bob"));
     
-    // Сохраняем Reply (не должен загружаться)
     storage->SaveMessage(CreateTestMessage(MessageType::Reply, 222, "bob", "alice"));
     
     auto pending = storage->LoadPendingMessagesOnly("bob");
@@ -126,7 +115,6 @@ TEST_F(StorageTest, LoadPendingRepliesForSenderOnly) {
     uint64_t msg_id = storage->SaveMessage(CreateTestMessage(MessageType::Message, 12345, "alice", "bob"));
     storage->SaveCorrelation(msg_id, 12345, "alice");
     
-    // Сохраняем Reply для alice
     Message reply(MessageType::Reply, FlagNone, 12345, "bob", "alice", {});
     uint64_t reply_id = storage->SaveMessage(reply);
     storage->SaveCorrelation(reply_id, 12345, "alice");
@@ -150,7 +138,6 @@ TEST_F(StorageTest, FindMessageIdByCorrelationAndDestination) {
 TEST_F(StorageTest, MarkPending) {
     uint64_t id = storage->SaveMessage(CreateTestMessage());
     
-    // Проверяем начальный статус - сообщение в PENDING
     auto pending_initial = storage->LoadPendingMessagesOnly("bob");
     bool found_initial = false;
     for (const auto& msg : pending_initial) {
@@ -161,10 +148,8 @@ TEST_F(StorageTest, MarkPending) {
     }
     EXPECT_TRUE(found_initial) << "Message should be in PENDING status initially";
     
-    // Mark as SENT
     storage->MarkSent(id);
     
-    // После MarkSent сообщение не должно быть в PENDING
     auto pending_after_sent = storage->LoadPendingMessagesOnly("bob");
     bool found_after_sent = false;
     for (const auto& msg : pending_after_sent) {
@@ -175,10 +160,8 @@ TEST_F(StorageTest, MarkPending) {
     }
     EXPECT_FALSE(found_after_sent) << "Message should not be in PENDING after MarkSent";
     
-    // Mark as PENDING again
     storage->MarkPending(id);
     
-    // После MarkPending сообщение должно снова быть в PENDING
     auto pending_after_pending = storage->LoadPendingMessagesOnly("bob");
     bool found_after_pending = false;
     for (const auto& msg : pending_after_pending) {
@@ -189,10 +172,8 @@ TEST_F(StorageTest, MarkPending) {
     }
     EXPECT_TRUE(found_after_pending) << "Message should be in PENDING after MarkPending";
     
-    // Mark as SENT again
     storage->MarkSent(id);
     
-    // Снова не должно быть в PENDING
     auto pending_final = storage->LoadPendingMessagesOnly("bob");
     bool found_final = false;
     for (const auto& msg : pending_final) {

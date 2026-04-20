@@ -1,4 +1,3 @@
-// include/metrics.hpp
 #pragma once
 
 #include <memory>
@@ -20,40 +19,31 @@
 
 namespace broker {
 
-/**
- * Интерфейс для сбора метрик (только используемые)
- */
 class IMetrics {
 public:
     virtual ~IMetrics() = default;
     
-    // Используются в server.cpp (OnZmqEvent, ProcessPendingSends)
     virtual void IncrementMessagesReceived() = 0;
     virtual void IncrementMessagesSent() = 0;
     virtual void IncrementMessagesFailed() = 0;
     virtual void ObservePayloadSize(size_t bytes) = 0;
     virtual void AddMessageProcessingTime(double seconds) = 0;
     
-    // Используются в router.cpp (RegisterClient, UnregisterClient, CleanupInactiveSessions)
     virtual void IncrementClientsRegistered() = 0;
     virtual void IncrementClientsUnregistered() = 0;
     virtual void IncrementClientsTimeout() = 0;
     virtual void SetActiveSessions(int count) = 0;
     
-    // Используются в router.cpp (DeliverOfflineMessages, CheckExpiredAcks)
     virtual void IncrementOfflineDelivered() = 0;
     virtual void IncrementMessagesExpired() = 0;
     
-    // Используется в message_handler.cpp (AckHandler)
     virtual void IncrementAcksReceived() = 0;
     
-    // Используется в server.cpp (UpdateQueueMetrics)
     virtual void SetPendingSendQueueSize(size_t size) = 0;
 };
 
 #ifdef BROKER_ENABLE_METRICS
 
-// ========== С PROMETHEUS ==========
 class MetricsManager : public IMetrics {
 public:
     explicit MetricsManager();
@@ -84,7 +74,6 @@ private:
     void UpdateMetrics();
     void InitializePrometheusMetrics();
     
-    // Счетчики
     std::atomic<uint64_t> messages_received_{0};
     std::atomic<uint64_t> messages_sent_{0};
     std::atomic<uint64_t> messages_failed_{0};
@@ -99,7 +88,6 @@ private:
     std::atomic<int64_t> active_sessions_{0};
     std::atomic<int64_t> pending_send_queue_{0};
     
-    // Prometheus объекты
     std::unique_ptr<prometheus::Exposer> exposer_;
     std::shared_ptr<prometheus::Registry> registry_;
     std::map<std::string, prometheus::Counter*> counters_;
@@ -112,9 +100,7 @@ private:
     std::chrono::seconds update_interval_{2};
 };
 
-#else // BROKER_ENABLE_METRICS
-
-// ========== ЗАГЛУШКА (без prometheus) ==========
+#else 
 class MetricsManager : public IMetrics {
 public:
     explicit MetricsManager() = default;
@@ -142,11 +128,8 @@ public:
     void SetPendingSendQueueSize(size_t) override {}
 };
 
-#endif // BROKER_ENABLE_METRICS
+#endif 
 
-/**
- * RAII таймер для замера времени обработки
- */
 class ScopedMetricsTimer {
 public:
     explicit ScopedMetricsTimer(std::shared_ptr<IMetrics> metrics)
@@ -166,4 +149,4 @@ private:
     std::chrono::steady_clock::time_point start_;
 };
 
-} // namespace broker
+}

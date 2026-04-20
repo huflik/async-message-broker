@@ -1,14 +1,10 @@
-# Корневой CMakeLists.txt
 cmake_minimum_required(VERSION 3.15)
 project(async-message-broker VERSION 1.0.0)
 
-# Подключаем директорию с заголовками
 include_directories(include)
 
-# Добавляем поддиректорию src
 add_subdirectory(src)
 
-# Тесты
 option(WITH_GTEST "Build tests" ON)
 
 if(WITH_GTEST)

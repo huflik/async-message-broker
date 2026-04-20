@@ -1,4 +1,3 @@
-// server.hpp
 #pragma once
 
 #include <atomic>
@@ -40,21 +39,16 @@ public:
     explicit Server(const Config& config);
     ~Server();
     
-    // Запуск сервера (блокирующий вызов)
     void Run();
     
-    // Остановка сервера (потокобезопасный)
     void Stop();
     
-    // Проверка, запущен ли сервер
     bool IsRunning() const noexcept { return running_.load(); }
     
-    // Реализация IMessageSender
     void SendToClient(zmq::message_t identity, 
                       zmq::message_t data,
                       std::function<void(bool)> callback = nullptr) override;
     
-    // Реализация IConfigProvider
     const Config& GetConfig() const noexcept override { return config_; }
 
     std::shared_ptr<IMetrics> GetMetrics() const override { return metrics_manager_; }
@@ -93,4 +87,4 @@ private:
     std::shared_ptr<MetricsManager> metrics_manager_;
 };
 
-} // namespace broker
+}

@@ -1,4 +1,3 @@
-// examples/universal_client.cpp
 #include <zmq.hpp>
 #include <iostream>
 #include <string>
@@ -16,11 +15,9 @@
 #include <arpa/inet.h>
 #include <algorithm>
 
-// Protocol constants (must match broker)
 constexpr uint8_t PROTOCOL_VERSION = 1;
 constexpr size_t HEADER_SIZE = 15;
 
-// Глобальный флаг отладки
 static bool g_debug = false;
 
 enum class MessageType : uint8_t {
@@ -37,7 +34,6 @@ enum MessageFlag : uint8_t {
     FlagNeedsAck = 1 << 1
 };
 
-// Serialization helpers
 inline uint64_t HostToNetwork64(uint64_t host) {
     return __builtin_bswap64(host);
 }
@@ -401,7 +397,6 @@ private:
             auto result = socket_.recv(zmq_msg, zmq::recv_flags::dontwait);
             
             if (result) {
-                // Пропускаем только ПОЛНОСТЬЮ пустые фреймы (delimiter)
                 if (zmq_msg.size() == 0) {
                     if (g_debug) {
                         std::cout << "\r[DEBUG] Skipping empty delimiter frame" << std::endl;
@@ -411,7 +406,6 @@ private:
                     continue;
                 }
                 
-                // Пытаемся десериализовать ВСЕ непустые сообщения
                 try {
                     std::vector<uint8_t> data(
                         static_cast<uint8_t*>(zmq_msg.data()),
@@ -424,13 +418,11 @@ private:
                         std::cout << "\r[DEBUG] Received: " << msg.ToString() << std::endl;
                     }
                     
-                    // Очищаем текущую строку и выводим сообщение
                     std::cout << "\r" << std::string(50, ' ') << "\r";
                     HandleMessage(msg);
                     std::cout << "[" << client_name_ << "] > " << std::flush;
                     
                 } catch (const std::exception& e) {
-                    // Выводим ошибку только в debug режиме
                     if (g_debug) {
                         std::cerr << "\r[DEBUG] Parse error: " << e.what() 
                                   << " (size=" << zmq_msg.size() << ")" << std::endl;
@@ -472,7 +464,6 @@ private:
                 break;
                 
             case MessageType::Ack:
-                // ЯВНЫЙ ВЫВОД ACK
                 std::cout << "\n[ACK] Message " << msg.correlation_id 
                           << " delivered to " << msg.sender << std::endl;
                 break;

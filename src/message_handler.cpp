@@ -1,4 +1,3 @@
-// src/message_handler.cpp
 #include "message_handler.hpp"
 #include <cstring>
 #include <spdlog/spdlog.h>
@@ -15,7 +14,6 @@ void RegisterHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     
     spdlog::info("Registering client: {}", client_name);
     
-    // Проверяем, не зарегистрирован ли уже клиент
     auto existing_session = ctx.session_manager.FindSession(client_name);
     if (existing_session) {
         spdlog::warn("Client {} already registered, replacing old session", client_name);
@@ -33,11 +31,9 @@ void RegisterHandler::Handle(const Message& msg, const HandlerContext& ctx) {
         spdlog::debug("Old session for {} completely removed", client_name);
     }
     
-    // Копируем identity для сессии
     zmq::message_t identity_copy(ctx.identity.size());
     std::memcpy(identity_copy.data(), ctx.identity.data(), ctx.identity.size());
     
-    // Создаем новую сессию
     auto session = std::make_shared<Session>(
         std::move(identity_copy),
         ctx.message_sender,
@@ -48,16 +44,13 @@ void RegisterHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     session->UpdateLastActivity();
     session->UpdateLastReceive();
     
-    // Установка колбэка для персистенции
     session->SetPersistCallback([&ctx](const std::string& name, const Message& m) {
         ctx.session_manager.PersistMessageForClient(name, m);
     });
     
-    // Регистрируем клиента
     if (ctx.session_manager.RegisterClient(client_name, session)) {
         spdlog::info("Client {} registered successfully", client_name);
         
-        // Доставляем оффлайн сообщения
         ctx.session_manager.DeliverOfflineMessages(client_name);
         ctx.session_manager.DeliverPendingReplies(client_name);
     } else {
@@ -75,7 +68,6 @@ void MessageHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     uint64_t message_id = ctx.storage.SaveMessage(msg);
     spdlog::debug("Message saved to database with id: {}", message_id);
     
-    // Сохраняем correlation если нужен ACK ИЛИ Reply
     if (msg.NeedsReply() || msg.NeedsAck()) {
         ctx.storage.SaveCorrelation(message_id, msg.GetCorrelationId(), msg.GetSender());
         spdlog::debug("Saved correlation: message_id={}, corr_id={}, sender={}", 
@@ -131,7 +123,6 @@ void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     uint64_t message_id = ctx.storage.SaveMessage(reply_msg);
     spdlog::debug("Reply saved to database with id: {}", message_id);
     
-    // Сохраняем correlation для reply
     std::string correlation_owner = !original_sender.empty() ? original_sender : reply_msg.GetDestination();
     ctx.storage.SaveCorrelation(message_id, msg.GetCorrelationId(), correlation_owner);
     spdlog::debug("Saved correlation for reply: message_id={}, corr_id={}, owner={}", 
@@ -157,9 +148,6 @@ void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     spdlog::info("Reply {} stored in database for later delivery to {}", message_id, destination);
 }
 
-// ================================================================
-// ИСПРАВЛЕННЫЙ AckHandler - теперь отправляет ACK оригинальному отправителю
-// ================================================================
 void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     spdlog::debug("Handling ACK for correlation_id: {}", msg.GetCorrelationId());
     
@@ -172,14 +160,11 @@ void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     
     const std::string& ack_sender = msg.GetSender();
     
-    // Ищем оригинального отправителя (кому нужно отправить ACK-уведомление)
     std::string original_sender = ctx.storage.FindOriginalSenderByCorrelation(acked_correlation_id);
     
-    // Ищем сообщение по correlation_id
     uint64_t message_id = ctx.storage.FindMessageIdByCorrelation(acked_correlation_id);
     
     if (message_id == 0) {
-        // Пробуем найти с учетом destination
         message_id = ctx.storage.FindMessageIdByCorrelationAndDestination(
             acked_correlation_id, ack_sender);
         
@@ -199,14 +184,12 @@ void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
             ctx.metrics->IncrementAcksReceived();
         }
         
-        // ========== ДОБАВЛЕНО: Отправка ACK оригинальному отправителю ==========
         if (!original_sender.empty()) {
             auto session = ctx.session_manager.FindSession(original_sender);
             if (session && session->IsOnline()) {
-                // Создаем ACK-уведомление для отправки оригинальному отправителю
                 Message ack_notification;
                 ack_notification.SetType(MessageType::Ack);
-                ack_notification.SetSender(ack_sender);  // Кто отправил ACK
+                ack_notification.SetSender(ack_sender); 
                 ack_notification.SetDestination(original_sender);
                 ack_notification.SetCorrelationId(acked_correlation_id);
                 
@@ -216,7 +199,6 @@ void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
                     spdlog::warn("Failed to send ACK notification to {}", original_sender);
                 }
             } else {
-                // Если отправитель офлайн, сохраняем ACK как pending сообщение
                 spdlog::debug("Original sender {} offline, storing ACK notification", original_sender);
                 
                 Message ack_notification;
@@ -232,7 +214,6 @@ void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
             spdlog::debug("No original sender found for correlation_id={}, ACK notification not sent", 
                           acked_correlation_id);
         }
-        // =====================================================================
     } else {
         spdlog::debug("Message {} does not require ACK, ignoring", message_id);
     }
@@ -269,4 +250,4 @@ std::unique_ptr<IMessageHandler> MessageHandlerFactory::Create(MessageType type)
     }
 }
 
-} // namespace broker
+} 

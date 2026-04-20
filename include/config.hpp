@@ -22,13 +22,12 @@ struct Config {
     int Threads = 0;
     std::string LogLevel = "info";
     
-    // Таймауты (в секундах)
-    int SessionTimeout = 60;      // Таймаут неактивной сессии (для fallback)
-    int AckTimeout = 30;           // Таймаут ожидания ACK
+    int SessionTimeout = 60;       
+    int AckTimeout = 30;           
 
     bool EnableMetrics = true;
     std::string MetricsBindAddress = "0.0.0.0:8080";
-    int MetricsUpdateInterval = 2;  // секунды
+    int MetricsUpdateInterval = 2;  
     
     Config() noexcept = default;
     ~Config() noexcept = default;
@@ -93,4 +92,4 @@ struct Config {
 }
 };
 
-} // namespace broker
+}

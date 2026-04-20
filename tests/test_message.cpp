@@ -1,4 +1,3 @@
-// tests/test_message.cpp
 #include <gtest/gtest.h>
 #include "message.hpp"
 

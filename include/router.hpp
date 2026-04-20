@@ -1,4 +1,3 @@
-// router.hpp
 #pragma once
 
 #include <memory>
@@ -49,4 +48,4 @@ private:
     std::mutex registry_mutex_;
 };
 
-} // namespace broker
+}

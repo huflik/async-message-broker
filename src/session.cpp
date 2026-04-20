@@ -4,7 +4,6 @@
 
 namespace broker {
 
-// ИЗМЕНИТЬ: конструктор
 Session::Session(zmq::message_t identity, 
                  IMessageSender& message_sender,
                  const Config& config)
@@ -60,7 +59,6 @@ bool Session::SendMessage(const Message& msg) {
     return SendZmqMessage(msg);
 }
 
-// ИЗМЕНИТЬ: полностью переписать SendZmqMessage, убрав зависимость от send_callback_
 bool Session::SendZmqMessage(const Message& msg) {
     try {
         auto serialized = msg.Serialize();
@@ -70,12 +68,10 @@ bool Session::SendZmqMessage(const Message& msg) {
         
         zmq::message_t data(serialized.data(), serialized.size());
         
-        // Используем promise/future для синхронного ожидания
         auto promise = std::make_shared<std::promise<bool>>();
         std::weak_ptr<std::promise<bool>> weak_promise = promise;
         std::shared_future<bool> future = promise->get_future();
         
-        // Используем IMessageSender напрямую
         message_sender_.SendToClient(std::move(identity_copy), std::move(data), 
             [weak_promise, this](bool success) {
                 auto p = weak_promise.lock();
@@ -91,12 +87,11 @@ bool Session::SendZmqMessage(const Message& msg) {
                 p->set_value(success);
             });
         
-        // Ждем результат с таймаутом
         auto status = future.wait_for(std::chrono::milliseconds(1000));
         if (status == std::future_status::timeout) {
             spdlog::warn("Send timeout for client {}, marking offline", name_);
             is_online_ = false;
-            promise.reset();  // Разрушаем promise, чтобы callback не вызвал set_value
+            promise.reset(); 
             return false;
         }
         
@@ -170,4 +165,4 @@ void Session::FlushQueue() {
     }
 }
 
-} // namespace broker
+}

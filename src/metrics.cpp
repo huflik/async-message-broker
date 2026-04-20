@@ -1,4 +1,3 @@
-// src/metrics.cpp
 #include "metrics.hpp"
 #include <spdlog/spdlog.h>
 
@@ -18,7 +17,6 @@ MetricsManager::~MetricsManager() {
 }
 
 void MetricsManager::InitializePrometheusMetrics() {
-    // 1. Счетчики сообщений
     auto& message_counter_family = prometheus::BuildCounter()
                                       .Name("broker_messages_total")
                                       .Help("Broker message counters")
@@ -31,7 +29,6 @@ void MetricsManager::InitializePrometheusMetrics() {
     counters_["messages_expired"] = &message_counter_family.Add({{"type", "expired"}});
     counters_["offline_delivered"] = &message_counter_family.Add({{"type", "offline"}});
     
-    // 2. Счетчики клиентов
     auto& client_counter_family = prometheus::BuildCounter()
                                      .Name("broker_clients_total")
                                      .Help("Broker client counters")
@@ -41,7 +38,6 @@ void MetricsManager::InitializePrometheusMetrics() {
     counters_["clients_unregistered"] = &client_counter_family.Add({{"type", "unregister"}});
     counters_["clients_timeout"] = &client_counter_family.Add({{"type", "timeout"}});
     
-    // 3. Gauges
     auto& gauge_family = prometheus::BuildGauge()
                             .Name("broker_state")
                             .Help("Broker state gauges")
@@ -50,7 +46,6 @@ void MetricsManager::InitializePrometheusMetrics() {
     gauges_["active_sessions"] = &gauge_family.Add({{"state", "active_sessions"}});
     gauges_["pending_send_queue"] = &gauge_family.Add({{"state", "pending_send_queue"}});
     
-    // 4. Гистограмма времени обработки
     auto& processing_histogram_family = prometheus::BuildHistogram()
                                            .Name("broker_message_processing_duration_seconds")
                                            .Help("Message processing duration in seconds")
@@ -61,7 +56,6 @@ void MetricsManager::InitializePrometheusMetrics() {
         prometheus::Histogram::BucketBoundaries{0.0001, 0.001, 0.01, 0.1, 1.0}
     );
     
-    // 5. Гистограмма размера payload
     auto& payload_histogram_family = prometheus::BuildHistogram()
                                         .Name("broker_payload_size_bytes")
                                         .Help("Message payload size in bytes")
@@ -144,6 +138,6 @@ void MetricsManager::AddMessageProcessingTime(double seconds) {
     }
 }
 
-} // namespace broker
+} 
 
-#endif // BROKER_ENABLE_METRICS
+#endif 

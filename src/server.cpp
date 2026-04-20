@@ -1,4 +1,3 @@
-// server.cpp
 #include "server.hpp"
 #include <spdlog/spdlog.h>
 #include <fcntl.h>
@@ -7,7 +6,6 @@
 
 namespace broker {
 
-// src/server.cpp - в конструкторе Server
 
 Server::Server(const Config& config)
     : config_(config)
@@ -18,7 +16,6 @@ Server::Server(const Config& config)
     spdlog::info("Configuration: session_timeout={}s, ack_timeout={}s", 
                  config_.SessionTimeout, config_.AckTimeout);
 
-    // ВСЕГДА создаем metrics_manager (даже если метрики отключены)
     metrics_manager_ = std::make_shared<MetricsManager>();
     
 #ifdef BROKER_ENABLE_METRICS
@@ -29,7 +26,6 @@ Server::Server(const Config& config)
             spdlog::info("Metrics enabled on {}", config_.MetricsBindAddress);
         } catch (const std::exception& e) {
             spdlog::error("Failed to initialize metrics: {}", e.what());
-            // Не падаем, продолжаем без метрик
         }
     }
 #endif
@@ -116,7 +112,6 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
         }
         spdlog::error("ZeroMQ FD error: {}", ec.message());
         
-        // Перерегистрируемся на следующее событие
         if (running_) {
             zmq_fd_->async_wait(
                 boost::asio::posix::stream_descriptor::wait_read,
@@ -182,7 +177,6 @@ void Server::OnZmqEvent(const boost::system::error_code& ec) {
         spdlog::trace("ZMQ_POLLOUT event (socket ready for write)");
     }
     
-    // Перерегистрируемся на следующее событие
     if (running_) {
         zmq_fd_->async_wait(
             boost::asio::posix::stream_descriptor::wait_read,
@@ -301,7 +295,7 @@ void Server::SetupCleanupTimer() {
     cleanup_timer_->async_wait([this](const boost::system::error_code& ec) {
         if (!ec && running_) {
             router_->CleanupInactiveSessions();
-            SetupCleanupTimer();  // Рекурсивно перезапускаем таймер
+            SetupCleanupTimer(); 
         }
     });
 }
@@ -315,7 +309,7 @@ void Server::SetupAckTimeoutTimer() {
     ack_timeout_timer_->async_wait([this](const boost::system::error_code& ec) {
         if (!ec && running_) {
             router_->CheckExpiredAcks();
-            SetupAckTimeoutTimer();  // Рекурсивно перезапускаем таймер
+            SetupAckTimeoutTimer(); 
         }
     });
 }
@@ -326,7 +320,6 @@ void Server::Run() {
     SetupCleanupTimer();
     SetupAckTimeoutTimer();
     
-    // Запускаем пул потоков
     for (int i = 0; i < config_.Threads; ++i) {
         threads_.emplace_back([this, i] {
             spdlog::debug("Worker thread #{} started", i);
@@ -337,7 +330,6 @@ void Server::Run() {
     
     spdlog::info("Server started with {} worker threads", config_.Threads);
     
-    // Ждем завершения всех потоков
     for (auto& thread : threads_) {
         if (thread.joinable()) {
             thread.join();
@@ -349,24 +341,22 @@ void Server::Run() {
 
 void Server::Stop() {
     if (!running_.exchange(false)) {
-        return;  // Уже остановлен
+        return;  
     }
     
     spdlog::info("Stopping server...");
     
-    // Очищаем очередь отправки
     {
         std::lock_guard<std::mutex> lock(pending_sends_mutex_);
         while (!pending_sends_.empty()) {
             auto& send = pending_sends_.front();
             if (send.callback) {
-                send.callback(false);  // Уведомляем об ошибке
+                send.callback(false);
             }
             pending_sends_.pop();
         }
     }
     
-    // Отменяем все таймеры
     if (cleanup_timer_) {
         boost::system::error_code ec;
         cleanup_timer_->cancel(ec);
@@ -377,21 +367,18 @@ void Server::Stop() {
         ack_timeout_timer_->cancel(ec);
     }
     
-    // Закрываем ZMQ сокет
     try {
         router_socket_.close();
     } catch (const std::exception& e) {
         spdlog::error("Error closing ZMQ socket: {}", e.what());
     }
-    
-    // Сбрасываем work_guard, чтобы io_context::run() мог завершиться
+
     work_guard_.reset();
     
-    // Останавливаем io_context
     io_context_.stop();
     
     spdlog::info("Server stop signal sent, waiting for threads...");
 }
 
 
-} // namespace broker
+} 

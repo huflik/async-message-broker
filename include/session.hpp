@@ -1,4 +1,3 @@
-// session.hpp
 #pragma once
 
 #include <memory>
@@ -11,7 +10,7 @@
 #include <zmq.hpp>
 
 #include "message.hpp"
-#include "interfaces.hpp"  // ДОБАВИТЬ эту строку
+#include "interfaces.hpp" 
 #include <spdlog/spdlog.h>
 
 namespace broker {
@@ -78,9 +77,8 @@ private:
     
     zmq::message_t identity_;
     
-    // ИЗМЕНИТЬ: вместо server_ используем интерфейсы
-    IMessageSender& message_sender_;  // Для отправки сообщений
-    const Config& config_;             // Для доступа к конфигурации
+    IMessageSender& message_sender_;  
+    const Config& config_;             
     
     std::string name_;
     bool is_online_ = true;
@@ -88,11 +86,8 @@ private:
     mutable std::mutex queue_mutex_;
     std::chrono::steady_clock::time_point last_receive_;
     std::chrono::steady_clock::time_point last_activity_;
-    
-    // УДАЛИТЬ: больше не нужен send_callback_, так как используем message_sender_
-    // std::function<void(zmq::message_t, zmq::message_t, std::function<void(bool)>)> send_callback_;
-    
+      
     std::function<void(const std::string&, const Message&)> persist_callback_;
 };
 
-} // namespace broker
+}

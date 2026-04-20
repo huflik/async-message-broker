@@ -1,4 +1,3 @@
-// interfaces.hpp
 #pragma once
 
 #include "message.hpp"
@@ -11,14 +10,9 @@
 
 namespace broker {
 
-// Forward declarations
 class Session;
 struct PendingMessage;
 class IMetrics;
-
-// ============================================================================
-// Интерфейс для работы с хранилищем (Storage)
-// ============================================================================
 class IStorage {
 public:
     virtual ~IStorage() = default;
@@ -39,10 +33,6 @@ public:
     [[nodiscard]] virtual std::vector<PendingMessage> LoadPendingRepliesForSenderOnly(const std::string& sender_name) = 0;
     [[nodiscard]] virtual std::vector<PendingMessage> LoadPendingMessagesOnly(const std::string& client_name) = 0;
 };
-
-// ============================================================================
-// Интерфейс для отправки сообщений клиентам
-// ============================================================================
 class IMessageSender {
 public:
     virtual ~IMessageSender() = default;
@@ -51,30 +41,22 @@ public:
                               std::function<void(bool)> callback = nullptr) = 0;
 };
 
-// ============================================================================
-// Интерфейс для получения конфигурации
-// ============================================================================
 class IConfigProvider {
 public:
     virtual ~IConfigProvider() = default;
     virtual const Config& GetConfig() const = 0;
 };
 
-// ============================================================================
-// Интерфейс для управления сессиями (расширенный)
-// ============================================================================
 class ISessionManager {
 public:
     virtual ~ISessionManager() = default;
     
-    // Управление сессиями
     [[nodiscard]] virtual std::shared_ptr<Session> FindSession(const std::string& name) = 0;
     [[nodiscard]] virtual bool RegisterClient(const std::string& name, std::shared_ptr<Session> session) = 0;
     virtual void UnregisterClient(const std::string& name) = 0;
     virtual void PrintActiveClients() = 0;
     virtual void CleanupInactiveSessions() = 0;
     
-    // Доставка сообщений
     virtual void DeliverOfflineMessages(const std::string& name) = 0;
     virtual void DeliverPendingReplies(const std::string& name) = 0;
     virtual void PersistMessageForClient(const std::string& client_name, const Message& msg) = 0;
@@ -82,9 +64,6 @@ public:
 
 };
 
-// ============================================================================
-// Интерфейс для колбэков сессии
-// ============================================================================
 class ISessionCallbacks {
 public:
     virtual ~ISessionCallbacks() = default;
@@ -99,4 +78,4 @@ public:
     [[nodiscard]] virtual std::shared_ptr<IMetrics> GetMetrics() const = 0;
 };
 
-} // namespace broker
+}

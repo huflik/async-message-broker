@@ -1,4 +1,3 @@
-// tests/test_session.cpp
 #include <gtest/gtest.h>
 #include <chrono>
 #include <thread>
@@ -6,7 +5,6 @@
 
 using namespace broker;
 
-// Простая заглушка для IMessageSender
 class TestMessageSender : public IMessageSender {
 public:
     void SendToClient(zmq::message_t identity, 

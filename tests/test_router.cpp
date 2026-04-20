@@ -1,4 +1,3 @@
-// tests/test_router.cpp
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include "router.hpp"
@@ -42,7 +41,6 @@ TEST_F(RouterTest, RegisterClient) {
     auto identity = CreateIdentity("bob");
     auto session = std::make_shared<Session>(std::move(identity), mock_sender, config);
     
-    // Важно: устанавливаем имя сессии!
     session->SetName("bob");
     
     bool result = router->RegisterClient("bob", session);
@@ -100,7 +98,6 @@ TEST_F(RouterTest, HandleRegisterMessage) {
 }
 
 TEST_F(RouterTest, HandleMessageOnline) {
-    // Сначала регистрируем bob
     auto identity = CreateIdentity("bob");
     auto register_msg = CreateRegisterMessage("bob");
     
@@ -111,7 +108,6 @@ TEST_F(RouterTest, HandleMessageOnline) {
     
     router->RouteMessage(register_msg, identity);
     
-    // Отправляем сообщение bob
     Message msg(MessageType::Message, FlagNone, 12345, "alice", "bob", {0x01});
     
     EXPECT_CALL(mock_storage, SaveMessage(_))
@@ -131,12 +127,10 @@ TEST_F(RouterTest, HandleMessageOffline) {
         .WillOnce(Return(1));
     EXPECT_CALL(mock_sender, SendToClient(_, _, _)).Times(0);
     
-    // bob не зарегистрирован - сообщение сохранится в БД
     router->RouteMessage(msg, CreateIdentity("alice"));
 }
 
 TEST_F(RouterTest, HandleReply) {
-    // Регистрируем alice
     auto identity_alice = CreateIdentity("alice");
     auto register_alice = CreateRegisterMessage("alice");
     
@@ -147,7 +141,6 @@ TEST_F(RouterTest, HandleReply) {
     
     router->RouteMessage(register_alice, identity_alice);
     
-    // Отправляем Reply
     Message reply(MessageType::Reply, FlagNone, 12345, "bob", "alice", {0x02});
     
     EXPECT_CALL(mock_storage, FindOriginalSenderByCorrelation(12345))
@@ -201,12 +194,10 @@ TEST_F(RouterTest, PrintActiveClients) {
     EXPECT_NO_THROW(router->PrintActiveClients());
 }
 
-// Дополнительный тест для проверки корректной работы RegisterClient
 TEST_F(RouterTest, RegisterClientSetsCorrectName) {
     auto identity = CreateIdentity("alice");
     auto session = std::make_shared<Session>(std::move(identity), mock_sender, config);
     
-    // Устанавливаем имя
     session->SetName("alice");
     
     bool result = router->RegisterClient("alice", session);

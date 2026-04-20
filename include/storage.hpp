@@ -1,4 +1,3 @@
-// storage.hpp
 #pragma once
 
 #include <string>
@@ -7,13 +6,10 @@
 #include <sqlite3.h>
 #include <mutex>
 #include "message.hpp"
-#include "interfaces.hpp"  // ДОБАВИТЬ эту строку
+#include "interfaces.hpp"  
 
 namespace broker {
 
-/**
- * Структура для отложенного сообщения с ID
- */
 struct PendingMessage {
     uint64_t id;
     Message msg;
@@ -27,13 +23,10 @@ struct PendingMessage {
     PendingMessage& operator=(PendingMessage&&) noexcept = default;
 };
 
-/**
- * Статусы сообщений в БД
- */
 enum MessageStatus : int {
-    STATUS_PENDING = 0,      // Ожидает доставки
-    STATUS_DELIVERED = 1,    // Доставлено (получено подтверждение от клиента)
-    STATUS_SENT = 2          // Отправлено, но ACK ещё не получен
+    STATUS_PENDING = 0,       
+    STATUS_DELIVERED = 1,    
+    STATUS_SENT = 2          
 };
 
 class Storage : public IStorage {
@@ -57,7 +50,6 @@ public:
 
 private:
     void CreateTables();
-    void ThrowOnDbError(int rc, const std::string& msg);
     uint64_t SaveMessageWithStatus(const Message& msg, int status);   
     
     sqlite3* db_ = nullptr;
@@ -65,4 +57,4 @@ private:
     std::mutex db_mutex_;
 };
 
-} // namespace broker
+}

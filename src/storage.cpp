@@ -1,4 +1,3 @@
-// src/storage.cpp
 #include "storage.hpp"
 #include <spdlog/spdlog.h>
 #include <cstring>
@@ -16,7 +15,6 @@ Storage::Storage(const std::string& db_path)
         throw std::runtime_error("Failed to open database: " + std::string(sqlite3_errmsg(db_)));
     }
     
-    // Включаем WAL режим для лучшей производительности
     char* errmsg = nullptr;
     rc = sqlite3_exec(db_, "PRAGMA journal_mode=WAL;", nullptr, nullptr, &errmsg);
     if (rc != SQLITE_OK) {
@@ -24,14 +22,12 @@ Storage::Storage(const std::string& db_path)
         sqlite3_free(errmsg);
     }
     
-    // Устанавливаем таймаут для блокировок
     rc = sqlite3_exec(db_, "PRAGMA busy_timeout=10000;", nullptr, nullptr, &errmsg);
     if (rc != SQLITE_OK) {
         spdlog::warn("Failed to set busy_timeout: {}", errmsg);
         sqlite3_free(errmsg);
     }
     
-    // Включаем внешние ключи
     rc = sqlite3_exec(db_, "PRAGMA foreign_keys=ON;", nullptr, nullptr, &errmsg);
     if (rc != SQLITE_OK) {
         spdlog::warn("Failed to enable foreign keys: {}", errmsg);
@@ -275,7 +271,6 @@ void Storage::SaveCorrelation(uint64_t message_id, uint64_t correlation_id, cons
     spdlog::debug("Storage::SaveCorrelation: msg_id={}, corr_id={}, sender={}", 
                   message_id, correlation_id, original_sender);
     
-    // Используем INSERT OR REPLACE для избежания дубликатов
     const char* sql = R"(
         INSERT OR REPLACE INTO correlations (message_id, correlation_id, original_sender)
         VALUES (?, ?, ?)
@@ -417,7 +412,6 @@ uint64_t Storage::FindMessageIdByCorrelationAndDestination(uint64_t correlation_
 void Storage::MarkAckReceived(uint64_t message_id, const std::string& ack_sender) {
     std::lock_guard<std::mutex> lock(db_mutex_);
     
-    // Проверяем, что ACK пришел от оригинального отправителя корреляции
     const char* select_sql = R"(
         SELECT original_sender 
         FROM correlations 
@@ -442,7 +436,6 @@ void Storage::MarkAckReceived(uint64_t message_id, const std::string& ack_sender
     }
     sqlite3_finalize(select_stmt);
     
-    // Если ACK от оригинального отправителя - удаляем корреляцию
     if (original_sender == ack_sender) {
         const char* del_sql = "DELETE FROM correlations WHERE message_id = ?";
         sqlite3_stmt* del_stmt;
@@ -645,4 +638,4 @@ std::vector<PendingMessage> Storage::LoadPendingRepliesForSenderOnly(const std::
     return replies;
 }
 
-} // namespace broker
+} 

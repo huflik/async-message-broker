@@ -1,4 +1,3 @@
-// tests/mock/mock_message_sender.hpp
 #pragma once
 
 #include <gmock/gmock.h>
@@ -13,4 +12,4 @@ public:
                 (override));
 };
 
-} // namespace broker
+}

@@ -1,4 +1,3 @@
-// router.cpp
 #include "router.hpp"
 #include "message_handler.hpp"
 #include <cstring>
@@ -22,7 +21,6 @@ Router::Router(IStorage& storage,
 void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
     spdlog::debug("Routing message: {}", msg.ToString());
     
-    // Находим сессию
     std::shared_ptr<Session> session;
     {
         std::lock_guard<std::mutex> lock(registry_mutex_);
@@ -41,7 +39,6 @@ void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
         }
     }
     
-    // Создаем контекст с метриками
     HandlerContext ctx{
         .storage = storage_,
         .session_manager = *this,
@@ -76,7 +73,6 @@ bool Router::RegisterClient(const std::string& name, std::shared_ptr<Session> se
     );
     identity_to_name_[identity_str] = name;
     
-    // Метрики
     if (metrics_) {
         metrics_->IncrementClientsRegistered();
         metrics_->SetActiveSessions(active_clients_.size());
@@ -99,7 +95,6 @@ void Router::UnregisterClient(const std::string& name) {
         identity_to_name_.erase(identity_str);
         active_clients_.erase(it);
         
-        // Метрики
         if (metrics_) {
             metrics_->IncrementClientsUnregistered();
             metrics_->SetActiveSessions(active_clients_.size());
@@ -280,7 +275,6 @@ void Router::CleanupInactiveSessions() {
             identity_to_name_.erase(identity_str);
             active_clients_.erase(it);
             
-            // Метрики
             if (metrics_) {
                 metrics_->IncrementClientsTimeout();
             }
@@ -341,4 +335,4 @@ void Router::UpdateSessionMetrics() {
     }
 }
 
-} // namespace broker
+}

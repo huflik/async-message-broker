@@ -1,4 +1,3 @@
-// tests/mock/mock_storage.hpp
 #pragma once
 
 #include <gmock/gmock.h>
@@ -23,4 +22,4 @@ public:
     MOCK_METHOD(std::vector<PendingMessage>, LoadPendingMessagesOnly, (const std::string& client_name), (override));
 };
 
-} // namespace broker
+}

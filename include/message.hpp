@@ -8,35 +8,20 @@
 
 namespace broker {
 
-/**
- * Типы сообщений, поддерживаемые брокером
- * 
- * Register - клиент регистрируется под логическим именем
- * Message  - обычное сообщение от одного клиента другому
- * Reply    - ответ на предыдущее сообщение (request-reply паттерн)
- * Ack      - подтверждение получения сообщения (application-level ACK)
- * Unregister - клиент явно отключается
- */
 enum class MessageType : uint8_t {
-    Register = 1,   // Регистрация клиента
-    Message = 2,    // Обычное сообщение
-    Reply = 3,      // Ответ на сообщение
-    Ack = 4,        // Подтверждение получения
-    Unregister = 5  // Явное отключение клиента
+    Register = 1,   
+    Message = 2,   
+    Reply = 3,     
+    Ack = 4,        
+    Unregister = 5 
 };
 
-/**
- * Флаги сообщения (битовые маски)
- */
 enum MessageFlag : uint8_t {
-    FlagNone = 0,               // 0x00 - флаги не установлены
-    FlagNeedsReply = 1 << 0,    // 0x01 - отправитель ожидает ответ
-    FlagNeedsAck = 1 << 1       // 0x02 - требуется подтверждение доставки
+    FlagNone = 0,               
+    FlagNeedsReply = 1 << 0,    
+    FlagNeedsAck = 1 << 1       
 };
 
-/**
- * Класс Message представляет собой сообщение, передаваемое между клиентами
- */
 class Message {
 public:
     Message() = default;
@@ -76,11 +61,9 @@ public:
         else ClearFlag(FlagNeedsAck);
     }
     
-    // Сериализация
     [[nodiscard]] std::vector<uint8_t> Serialize() const;
     [[nodiscard]] static Message Deserialize(const std::vector<uint8_t>& data);
     
-    // Отладка
     std::string ToString() const;
 
 private:
@@ -92,4 +75,4 @@ private:
     std::vector<uint8_t> payload_;
 };
 
-} // namespace broker
+} 

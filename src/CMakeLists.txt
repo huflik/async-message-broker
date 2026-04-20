@@ -60,9 +60,8 @@ if(NOT prometheus-cpp_FOUND)
             INTERFACE_LINK_LIBRARIES "prometheus-cpp::core"
         )
     endif()
-endif()
+endif()#
 
-# Проверяем, найдена ли библиотека
 if(prometheus-cpp_FOUND)
     message(STATUS "Building with Prometheus metrics support")
     add_definitions(-DBROKER_ENABLE_METRICS)
@@ -75,7 +74,6 @@ else()
     set(METRICS_SOURCES metrics_stub.cpp)  # Используем заглушку
 endif()
 
-# Добавление исполняемого файла
 add_executable(broker
     main.cpp
     message.cpp
@@ -87,41 +85,28 @@ add_executable(broker
     ${METRICS_SOURCES}
 )
 
-# Линковка - ВАЖНО: порядок библиотек имеет значение!
 target_link_libraries(broker
-    ${METRICS_LIBS}           # Сначала prometheus-cpp
+    ${METRICS_LIBS}          
     ${ZMQ_LIBRARIES}
     spdlog::spdlog
     SQLite::SQLite3
     ${Boost_LIBRARIES}
     pthread
-    # Дополнительные системные библиотеки, которые могут потребоваться
     dl
     rt
 )
 
-# Добавляем пути к библиотекам
-target_link_directories(broker PRIVATE /usr/local/lib /usr/local/lib64)
 
-# ============================================================================
-# Examples Clients
-# ============================================================================
+target_link_directories(broker PRIVATE /usr/local/lib /usr/local/lib64)
 
 option(BUILD_EXAMPLES "Build example clients" ON)
 
 if(BUILD_EXAMPLES)
-
-    add_executable(test_client_full ../examples/cpp_client/test_client_full.cpp)       
-    target_link_libraries(test_client_full ${ZMQ_LIBRARIES} pthread)
-    target_include_directories(test_client_full PRIVATE ${ZMQ_INCLUDE_DIRS})
-
     add_executable(universal_client ../examples/universal_client.cpp)
     target_link_libraries(universal_client ${ZMQ_LIBRARIES} pthread)
     target_include_directories(universal_client PRIVATE ${ZMQ_INCLUDE_DIRS})
 
 endif()
-
-# ============================================================================
 
 install(TARGETS broker DESTINATION bin)
 

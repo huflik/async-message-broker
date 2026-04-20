@@ -1,4 +1,3 @@
-// tests/test_message_handler.cpp
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include "message_handler.hpp"
@@ -79,9 +78,7 @@ TEST_F(MessageHandlerTest, MessageHandler) {
     
     EXPECT_CALL(mock_storage, SaveMessage(_))
         .WillOnce(Return(1));
-    // FindSession - это метод ISessionManager, а не IStorage
-    // Не нужно EXPECT_CALL на mock_storage для FindSession
-    
+
     EXPECT_NO_THROW(handler.Handle(msg, ctx));
 }
 

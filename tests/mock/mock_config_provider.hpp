@@ -1,4 +1,3 @@
-// tests/mock/mock_config_provider.hpp
 #pragma once
 
 #include <gmock/gmock.h>
@@ -19,4 +18,4 @@ private:
     Config config_;
 };
 
-} // namespace broker
+}
