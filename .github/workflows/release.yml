@@ -53,7 +53,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DWITH_GTEST=OFF \
-            -DBUILD_EXAMPLES=ON
+            -DBUILD_EXAMPLES=OFF
       
       - name: Build project
         run: cmake --build build --config Release -j $(nproc)
@@ -62,27 +62,22 @@ jobs:
         run: |
           mkdir -p pkg/DEBIAN
           mkdir -p pkg/usr/bin
+          mkdir -p pkg/usr/share/doc/async-message-broker
           
-          # Проверяем и копируем broker
+          # Копируем бинарник
           if [ -f "build/broker" ]; then
             cp build/broker pkg/usr/bin/
-            echo "broker copied"
           elif [ -f "build/src/broker" ]; then
             cp build/src/broker pkg/usr/bin/
-            echo "broker copied from src"
           else
-            echo "ERROR: broker not found!"
+            echo "ERROR: broker executable not found!"
             find build -name "broker" -type f
             exit 1
           fi
           
-          # Копируем universal_client если есть
-          if [ -f "build/universal_client" ]; then
-            cp build/universal_client pkg/usr/bin/
-            echo "universal_client copied"
-          elif [ -f "build/examples/universal_client" ]; then
-            cp build/examples/universal_client pkg/usr/bin/
-            echo "universal_client copied from examples"
+          # Копируем README если есть
+          if [ -f "README.md" ]; then
+            cp README.md pkg/usr/share/doc/async-message-broker/
           fi
           
           # Создаем control файл
@@ -92,30 +87,22 @@ jobs:
           Section: net
           Priority: optional
           Architecture: amd64
-          Maintainer: GitHub Actions <actions@github.com>
-          Depends: libzmq5, libboost-system-dev, libsqlite3-0, libstdc++6, libc6
+          Depends: libzmq5, libboost-system1.74.0, libsqlite3-0, libstdc++6, libc6
+          Maintainer: Your Name <your.email@example.com>
           Description: Async Message Broker with guaranteed delivery
            High-performance message broker with ZeroMQ transport,
            SQLite persistence, and Prometheus metrics support.
            Run with: broker --port 5555 --db-path /path/to/db
           EOF
           
-          # Создаем postinst скрипт
-          cat > pkg/DEBIAN/postinst << 'EOF'
+          # Создаем postinst скрипт для создания директории данных
+          cat > pkg/DEBIAN/postinst << EOF
           #!/bin/sh
           set -e
           mkdir -p /var/lib/async-message-broker
           chmod 755 /var/lib/async-message-broker
-          echo ""
-          echo "=== Async Message Broker installed ==="
+          echo "Async Message Broker installed successfully!"
           echo "Run: broker --help"
-          echo "Example: broker --port 5555 --db-path /var/lib/async-message-broker/broker.db"
-          if [ -f /usr/bin/universal_client ]; then
-            echo ""
-            echo "=== Universal Client ==="
-            echo "Run: universal_client tcp://localhost:5555 <client_name>"
-          fi
-          echo ""
           EOF
           chmod 755 pkg/DEBIAN/postinst
       
@@ -123,31 +110,29 @@ jobs:
         run: |
           dpkg-deb --build pkg
           mv pkg.deb async-message-broker-${{ github.run_number }}.deb
-          echo "DEB_NAME=async-message-broker-${{ github.run_number }}.deb" >> $GITHUB_ENV
           echo "=== DEB package created ==="
           ls -la *.deb
-          file async-message-broker-${{ github.run_number }}.deb
+          dpkg --info *.deb
       
-      - name: Upload DEB as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: async-message-broker-deb
-          path: ${{ env.DEB_NAME }}
-      
-      - name: Create Release and Upload
+      - name: Create Release
         if: github.event_name == 'push'
-        uses: softprops/action-gh-release@v1
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: v1.0.${{ github.run_number }}
-          name: Release v1.0.${{ github.run_number }}
-          body: |
-            ## Automated Build
-            
-            ✅ Build completed successfully
-            - Build number: ${{ github.run_number }}
-            - Commit: ${{ github.sha }}
-            
-            ### Installation
-            ```bash
-            sudo dpkg -i async-message-broker-${{ github.run_number }}.deb
-            broker --help
+          release_name: Release v1.0.${{ github.run_number }}
+          draft: false
+          prerelease: false
+      
+      - name: Upload Release Asset
+        if: steps.create_release.outputs.id != ''
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./async-message-broker-${{ github.run_number }}.deb
+          asset_name: async-message-broker.deb
+          asset_content_type: application/vnd.debian.binary-package
