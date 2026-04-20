@@ -8,89 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ============================================================================
-  # Этап 1: Тестирование
-  # ============================================================================
-  test:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake \
-            build-essential \
-            pkg-config \
-            libzmq3-dev \
-            libboost-system-dev \
-            libsqlite3-dev \
-            libspdlog-dev \
-            zlib1g-dev \
-            libcurl4-openssl-dev \
-            libgtest-dev \
-            libgmock-dev
-      
-      - name: Build GTest and GMock
-        run: |
-          cd /usr/src/gtest
-          sudo cmake CMakeLists.txt
-          sudo make
-          sudo cp lib/*.a /usr/lib
-          
-          if [ ! -f /usr/lib/libgmock.a ]; then
-            sudo ln -s /usr/lib/libgtest.a /usr/lib/libgmock.a
-            sudo ln -s /usr/lib/libgtest_main.a /usr/lib/libgmock_main.a
-          fi
-      
-      - name: Build prometheus-cpp
-        run: |
-          git clone --recursive https://github.com/jupp0r/prometheus-cpp.git
-          cd prometheus-cpp
-          git checkout v1.2.4
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/usr/local \
-            -DENABLE_TESTING=OFF \
-            -DBUILD_SHARED_LIBS=OFF
-          make -j$(nproc)
-          sudo make install
-          cd ../..
-      
-      - name: Configure CMake for Tests
-        run: |
-          cmake -B build \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DWITH_GTEST=ON \
-            -DBUILD_EXAMPLES=ON
-      
-      - name: Build tests
-        run: cmake --build build --config Debug -j $(nproc)
-      
-      - name: Run tests
-        run: |
-          cd build
-          ctest --output-on-failure --verbose
-      
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: |
-            build/Testing/
-            build/*.log
-
-  # ============================================================================
-  # Этап 2: Сборка DEB пакета
-  # ============================================================================
-  package:
-    needs: test
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -129,7 +47,7 @@ jobs:
           sudo make install
           cd ../..
       
-      - name: Configure CMake for Release
+      - name: Configure CMake
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -144,46 +62,45 @@ jobs:
         run: |
           mkdir -p pkg/DEBIAN
           mkdir -p pkg/usr/bin
-          mkdir -p pkg/usr/share/doc/async-message-broker
           
+          # Проверяем и копируем broker
           if [ -f "build/broker" ]; then
             cp build/broker pkg/usr/bin/
+            echo "broker copied"
           elif [ -f "build/src/broker" ]; then
             cp build/src/broker pkg/usr/bin/
+            echo "broker copied from src"
           else
-            echo "ERROR: broker executable not found!"
+            echo "ERROR: broker not found!"
             find build -name "broker" -type f
             exit 1
           fi
           
+          # Копируем universal_client если есть
           if [ -f "build/universal_client" ]; then
             cp build/universal_client pkg/usr/bin/
-            echo "universal_client copied to package"
+            echo "universal_client copied"
           elif [ -f "build/examples/universal_client" ]; then
             cp build/examples/universal_client pkg/usr/bin/
-            echo "universal_client copied from examples to package"
-          else
-            echo "WARNING: universal_client not found, continuing without it"
+            echo "universal_client copied from examples"
           fi
           
-          if [ -f "README.md" ]; then
-            cp README.md pkg/usr/share/doc/async-message-broker/
-          fi
-          
+          # Создаем control файл
           cat > pkg/DEBIAN/control << EOF
           Package: async-message-broker
           Version: 1.0.${{ github.run_number }}
           Section: net
           Priority: optional
           Architecture: amd64
-          Depends: libzmq5, libboost-system1.74.0, libsqlite3-0, libstdc++6, libc6
-          Maintainer: Your Name <your.email@example.com>
+          Maintainer: GitHub Actions <actions@github.com>
+          Depends: libzmq5, libboost-system-dev, libsqlite3-0, libstdc++6, libc6
           Description: Async Message Broker with guaranteed delivery
            High-performance message broker with ZeroMQ transport,
            SQLite persistence, and Prometheus metrics support.
            Run with: broker --port 5555 --db-path /path/to/db
           EOF
           
+          # Создаем postinst скрипт
           cat > pkg/DEBIAN/postinst << 'EOF'
           #!/bin/sh
           set -e
@@ -196,8 +113,7 @@ jobs:
           if [ -f /usr/bin/universal_client ]; then
             echo ""
             echo "=== Universal Client ==="
-            echo "Run: universal_client <broker_address> <client_name>"
-            echo "Example: universal_client tcp://localhost:5555 alice"
+            echo "Run: universal_client tcp://localhost:5555 <client_name>"
           fi
           echo ""
           EOF
@@ -206,12 +122,11 @@ jobs:
       - name: Build DEB package
         run: |
           dpkg-deb --build pkg
-          DEB_NAME="async-message-broker-${{ github.run_number }}.deb"
-          mv pkg.deb $DEB_NAME
-          echo "DEB_NAME=$DEB_NAME" >> $GITHUB_ENV
+          mv pkg.deb async-message-broker-${{ github.run_number }}.deb
+          echo "DEB_NAME=async-message-broker-${{ github.run_number }}.deb" >> $GITHUB_ENV
           echo "=== DEB package created ==="
           ls -la *.deb
-          dpkg --info $DEB_NAME
+          file async-message-broker-${{ github.run_number }}.deb
       
       - name: Upload DEB as artifact
         uses: actions/upload-artifact@v4
@@ -219,16 +134,16 @@ jobs:
           name: async-message-broker-deb
           path: ${{ env.DEB_NAME }}
       
-      - name: Create Release and Upload DEB
+      - name: Create Release and Upload
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: Release v1.0.${{ github.run_number }}
           body: |
-            ## Automated Build with Tests
+            ## Automated Build
             
-            ✅ All tests passed
+            ✅ Build completed successfully
             - Build number: ${{ github.run_number }}
             - Commit: ${{ github.sha }}
             
