@@ -53,7 +53,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DWITH_GTEST=OFF \
-            -DBUILD_EXAMPLES=OFF
+            -DBUILD_EXAMPLES=ON
       
       - name: Build project
         run: cmake --build build --config Release -j $(nproc)
@@ -64,7 +64,7 @@ jobs:
           mkdir -p pkg/usr/bin
           mkdir -p pkg/usr/share/doc/async-message-broker
           
-          # Копируем бинарник
+          # Копируем бинарник брокера
           if [ -f "build/broker" ]; then
             cp build/broker pkg/usr/bin/
           elif [ -f "build/src/broker" ]; then
@@ -73,6 +73,13 @@ jobs:
             echo "ERROR: broker executable not found!"
             find build -name "broker" -type f
             exit 1
+          fi
+          
+          # Копируем universal_client
+          if [ -f "build/universal_client" ]; then
+            cp build/universal_client pkg/usr/bin/
+          elif [ -f "build/examples/universal_client" ]; then
+            cp build/examples/universal_client pkg/usr/bin/
           fi
           
           # Копируем README если есть
@@ -103,6 +110,9 @@ jobs:
           chmod 755 /var/lib/async-message-broker
           echo "Async Message Broker installed successfully!"
           echo "Run: broker --help"
+          if [ -f /usr/bin/universal_client ]; then
+            echo "Run: universal_client tcp://localhost:5555 <client_name>"
+          fi
           EOF
           chmod 755 pkg/DEBIAN/postinst
       
