@@ -91,3 +91,41 @@ std::thread server_thread([&server]() { server.Run(); });
 server.Stop();
 server_thread.join();
 ```
+### Структура Config
+
+Конфигурация сервера
+
+**Поля**
+
+| Поле | Тип | По умолчанию | Описание |
+| :--- | :--- | :--- | :--- |
+| `Port` | `int` | `5555` | Порт для ZeroMQ |
+| `DbPath` | `string` | `"./broker.db"` | Путь к базе SQLite |
+| `Threads` | `int` | кол-во ядер CPU | Количество рабочих потоков |
+| `LogLevel` | `string` | `"info"` | Уровень логирования |
+| `SessionTimeout` | `int` | `60` | Таймаут сессии в секундах |
+| `AckTimeout` | `int` | `30` | Таймаут подтверждения в секундах |
+| `EnableMetrics` | `bool` | `true` | Включить метрики Prometheus |
+| `MetricsBindAddress` | `string` | `"0.0.0.0:8080"` | Адрес для метрик |
+| `MetricsUpdateInterval` | `int` | `2` | Интервал обновления метрик |
+
+**Статические методы**
+
+| Метод | Описание |
+| :--- | :--- |
+| `ParseArgs(argc, argv)` | Разбирает аргументы командной строки |
+| `PrintHelp(program_name)` | Выводит справку |
+
+**Аргументы командной строки**
+
+| Аргумент | Описание |
+| :--- | :--- |
+| `--port PORT` | Порт для ZeroMQ |
+| `--db-path PATH` | Путь к базе данных |
+| `--threads N` | Количество рабочих потоков |
+| `--log-level LEVEL` | Уровень логирования |
+| `--session-timeout N` | Таймаут сессии |
+| `--ack-timeout N` | Таймаут подтверждения |
+| `--disable-metrics` | Отключить метрики |
+| `--metrics-address ADDR` | Адрес для метрик |
+| `--help` | Показать справку |
