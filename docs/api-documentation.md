@@ -52,9 +52,42 @@
 | `FlagNeedsReply` | 1 << 0 | Ожидается ответ |
 | `FlagNeedsAck` | 1 << 1 | Требуется подтверждение |
 
-**Пример:**
+**Пример использования**
 
 ```cpp
 Message msg(MessageType::Message, FlagNeedsAck, 12345, "alice", "bob", {0x01, 0x02});
 auto serialized = msg.Serialize();
 auto deserialized = Message::Deserialize(serialized);
+```
+
+### Класс Server
+
+Основной класс сервера брокера
+
+**Методы**
+
+| Метод | Описание |
+| :--- | :--- |
+| `Server(Config)` | Конструктор |
+| `Run()` | Запускает сервер |
+| `Stop()` | Останавливает сервер |
+| `IsRunning()` | Проверяет, работает ли сервер |
+| `SendToClient()` | Отправляет сообщение клиенту |
+| `GetConfig()` | Возвращает конфигурацию |
+| `GetMetrics()` | Возвращает менеджер метрик |
+
+## Пример использования
+
+```cpp
+Config config;
+config.Port = 5555;
+config.DbPath = "./broker.db";
+
+Server server(config);
+std::thread server_thread([&server]() { server.Run(); });
+
+// ... выполнение полезной работы ...
+
+server.Stop();
+server_thread.join();
+```
