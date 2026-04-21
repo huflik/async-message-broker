@@ -1,5 +1,5 @@
 [![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://isocpp.org/)
-[![Boost](https://img.shields.io/badge/Boost-1.82+-green.svg)](https://www.boost.org/)
+[![Boost](https://img.shields.io/badge/Boost-1.74+-green.svg)](https://www.boost.org/)
 [![ZeroMQ](https://img.shields.io/badge/ZeroMQ-4.3+-red.svg)](https://zeromq.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-3-blue.svg)](https://www.sqlite.org/)
 
