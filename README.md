@@ -557,29 +557,56 @@ sequenceDiagram
 
 ## Структура проекта
 ```
-broker/
-├── cmake/                
-├── include/               
-│   └── broker/            
-│       ├── server.hpp
-│       ├── router.hpp
-│       ├── message.hpp
-│       └── storage.hpp
+async-message-broker/
+│
+├── CMakeLists.txt                    # Корневой CMake (подключает src/ и tests/)
+│
+├── README.md                         # Документация проекта
+│
+├── docs/
+│   ├── api-documentation.md          # Документация API
+│   └── technical-specification.md    # Техническое задание (упоминается в README)
+│
+├── include/
+│   └── broker/
+│       ├── config.hpp                # Конфигурация сервера
+│       ├── interfaces.hpp            # Все интерфейсы (IStorage, ISessionManager и др.)
+│       ├── message.hpp               # Класс Message и enums
+│       ├── message_handler.hpp       # Обработчики сообщений + HandlerContext
+│       ├── metrics.hpp               # IMetrics, MetricsManager, ScopedMetricsTimer
+│       ├── router.hpp                # Класс Router (реализует ISessionManager)
+│       ├── server.hpp                # Класс Server
+│       ├── session.hpp               # Класс Session
+│       └── storage.hpp               # Класс Storage (реализует IStorage)
+│
 ├── src/
-│   ├── server.cpp
-│   ├── router.cpp
-│   ├── message.cpp
-│   ├── storage.cpp
-│   ├── zmq_gateway.cpp
-│   └── main.cpp
-├── libs/                   
+│   ├── CMakeLists.txt                # Сборка исходников
+│   ├── main.cpp                      # Точка входа (парсинг аргументов, запуск Server)
+│   ├── server.cpp                    # Реализация Server
+│   ├── router.cpp                    # Реализация Router
+│   ├── session.cpp                   # Реализация Session
+│   ├── storage.cpp                   # Реализация Storage (SQLite)
+│   ├── message.cpp                   # Реализация Message (сериализация)
+│   ├── message_handler.cpp           # Реализация всех обработчиков + Factory
+│   ├── metrics.cpp                   # Реализация MetricsManager (если включены метрики)
+│   └── metrics_stub.cpp              # Заглушка метрик (если выключены)
+│
+├── examples/
+│   ├── CMakeLists.txt                # Сборка примеров (опционально)
+│   └── universal_client.cpp          # Универсальный клиент (интерактивный)
+│
 ├── tests/
-├── examples/               
-│   ├── cpp_client/
-│   └── python_client/
-├── docs/                   
-├── CMakeLists.txt
-└── README.md
+    ├── CMakeLists.txt                # Сборка тестов
+    ├── mock/
+    │   ├── mock_storage.hpp          # Mock для IStorage
+    │   ├── mock_message_sender.hpp   # Mock для IMessageSender
+    │   └── mock_config_provider.hpp  # Mock для IConfigProvider
+    ├── test_message.cpp              # Тесты Message
+    ├── test_storage.cpp              # Тесты Storage
+    ├── test_session.cpp              # Тесты Session
+    ├── test_router.cpp               # Тесты Router
+    └── test_message_handler.cpp      # Тесты обработчиков
+
 ```
 
 ## Сборка и установка
