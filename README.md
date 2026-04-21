@@ -22,7 +22,7 @@
 | **Двухсторонняя связь** | Request-reply с корреляцией |
 | **Подтверждения** | Application-level ACK |
 | **Протокол** | Бинарный (TLV) |
-| **Клиенты** | C++ и Python примеры |
+| **Клиенты** | C++ примеры |
 | **Тестирование** | Google Test |
 | **Сборка** | CMake |
 
@@ -504,7 +504,7 @@ sequenceDiagram
 
 | Компонент | Технология |
 |-----------|------------|
-| **Язык** | C++17/20 |
+| **Язык** | C++17 |
 | **Сеть** | Boost.Asio |
 | **Транспорт** | ZeroMQ (libzmq + cppzmq) |
 | **Хранение** | SQLite |
@@ -512,7 +512,7 @@ sequenceDiagram
 | **Сборка** | CMake |
 | **Тестирование** | Google Test |
 
-### Язык программирования: C++17/20
+### Язык программирования: C++17
 **Обоснование:**
 - Требуется максимальная производительность
 - C++ обеспечивает эффективную работу с сетью, памятью и многопоточностью, что критически важно для брокера сообщений.
@@ -613,11 +613,398 @@ async-message-broker/
 
 ### Требования
 
-- CMake 3.15+
-- Компилятор с поддержкой C++17 (GCC 9+)
-- Boost 1.82+ (Asio, Beast)
-- ZeroMQ 4.3+ (libzmq, cppzmq)
-- SQLite3
-- spdlog
+| Компонент | Минимальная версия | Примечание |
+|-----------|-------------------|------------|
+| **CMake** | 3.15 | Обязательно |
+| **C++ компилятор** | GCC 9+ / Clang 12+ | С поддержкой C++17 |
+| **ZeroMQ** | 4.3+ | libzmq3-dev + cppzmq-dev |
+| **Boost** | 1.74+ | Требуется только Boost.Asio |
+| **SQLite3** | 3.0+ | libsqlite3-dev |
+| **spdlog** | 1.12+ | libspdlog-dev |
+| **prometheus-cpp** | 1.2.4 | Опционально, для метрик |
+
+---
+
+### Установка зависимостей
+
+#### Ubuntu / Debian
+
+    sudo apt-get update
+    sudo apt-get install -y \
+        cmake \
+        build-essential \
+        pkg-config \
+        libzmq3-dev \
+        libboost-system-dev \
+        libsqlite3-dev \
+        libspdlog-dev \
+        zlib1g-dev \
+        libcurl4-openssl-dev
+
+#### Сборка prometheus-cpp (опционально)
+
+    git clone --recursive https://github.com/jupp0r/prometheus-cpp.git
+    cd prometheus-cpp
+    git checkout v1.2.4
+    mkdir build && cd build
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DENABLE_TESTING=OFF \
+        -DBUILD_SHARED_LIBS=OFF
+    make -j$(nproc)
+    sudo make install
+    cd ../..
+
+---
+
+### Сборка брокера
+
+    git clone https://github.com/huflik/async-message-b.git
+    cd async-message-broker
+
+    cmake -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DWITH_GTEST=OFF \
+        -DBUILD_EXAMPLES=ON
+
+    cmake --build build --config Release -j $(nproc)
+
+---
+
+### Установка
+
+    sudo cmake --install build
+
+    broker --help
+    universal_client --help
+
+---
+
+### Установка DEB пакета (из релиза GitHub)
+
+    wget https://github.com/huflik/async-message-broker/releases/tag/v1.0.x/async-message-broker.deb
+
+    sudo dpkg -i async-message-broker.deb
+
+    sudo apt-get install -f
+
+---
+
+### Запуск
+
+#### Запуск брокера
+
+    broker
+
+    broker --port 5556 --db-path /var/lib/broker/data.db --threads 4
+
+    broker --log-level debug
+
+    broker --help
+
+#### Запуск универсального клиента
+
+    universal_client tcp://localhost:5555 alice
+
+    universal_client tcp://localhost:5555 bob --debug
+
+---
+
+### Сборка тестов
+
+    cmake -B build \
+        -DCMAKE_BUILD_TYPE=Debug \
+        -DWITH_GTEST=ON \
+        -DBUILD_EXAMPLES=ON
+
+    cmake --build build --config Debug -j $(nproc)
+
+    cd build
+    ctest --output-on-failure --verbose
+
+---
+
+### Опции CMake
+
+| Опция | По умолчанию | Описание |
+|-------|-------------|----------|
+| `WITH_GTEST` | OFF | Включить сборку тестов (Google Test) |
+| `BUILD_EXAMPLES` | OFF | Включить сборку примеров (universal_client) |
+| `BROKER_ENABLE_METRICS` | AUTO | Принудительно включить/выключить метрики Prometheus |
+
+---
+
+### Аргументы командной строки брокера
+
+| Аргумент | По умолчанию | Описание |
+|----------|-------------|----------|
+| `--port PORT` | 5555 | Порт прослушивания ZeroMQ |
+| `--db-path PATH` | ./broker.db | Путь к базе данных SQLite |
+| `--threads N` | CPU cores | Количество рабочих потоков |
+| `--log-level LEVEL` | info | Уровень логирования (trace/debug/info/warn/error) |
+| `--session-timeout N` | 60 | Таймаут сессии в секундах |
+| `--ack-timeout N` | 30 | Таймаут подтверждения в секундах |
+| `--disable-metrics` | - | Отключить метрики Prometheus |
+| `--metrics-address ADDR` | 0.0.0.0:8080 | Адрес для экспорта метрик |
+| `--help` | - | Показать справку |
+
+---
+
+## Проверка работоспособности
+
+**Запустите брокер с таймаутом сессии 1200 секунд (20 минут):**
+
+    broker --port 5555 --session-timeout 1200
+
+---
+
+### Сценарий 1: Отправка обычного сообщения
+
+**Запустите клиента alice:**
+
+    universal_client tcp://localhost:5555 alice
+    
+**Запустите клиента bob:**
+
+    universal_client tcp://localhost:5555 bob   
+
+**В клиенте alice:**
+
+    [alice] > send bob Привет Боб!
+
+**Ожидаемый результат в клиенте bob:**
+
+    [RECEIVED] Message from alice [id=...]: Привет Боб!
+
+---
+
+### Сценарий 2: Отправка сообщения с подтверждением (ACK)
+
+**Запустите клиента alice:**
+
+    universal_client tcp://localhost:5555 alice
+    
+**Запустите клиента bob:**
+
+    universal_client tcp://localhost:5555 bob   
+
+**В клиенте alice:**
+
+    [alice] > send_ack bob Важное сообщение
+
+**Ожидаемый результат в клиенте alice:**
+
+    Sent to bob [id=..., needs_ack]: Важное сообщение
+
+**Ожидаемый результат в клиенте bob:**
+
+    [RECEIVED] Message from alice [id=...]: Важное сообщение
+
+**Ожидаемый результат в клиенте alice:**
+
+    [ACK] Message ... delivered to bob
+
+---
+
+### Сценарий 3: Запрос-ответ (Request-Reply)
+
+**Запустите клиента alice:**
+
+    universal_client tcp://localhost:5555 alice
+    
+**Запустите клиента bob:**
+
+    universal_client tcp://localhost:5555 bob   
+
+**В клиенте alice:**
+
+    [alice] > request bob Сколько времени?
+
+**Ожидаемый результат в клиенте bob:**
+
+    [RECEIVED] Message from alice [id=...]: Сколько времени?
+    [RECEIVED] Message has NEEDS_REPLY flag. Auto-reply sent.
+
+**Ожидаемый результат в клиенте alice:**
+
+    [REPLY] From bob [id=...]: Auto-reply to: Сколько времени?
+
+---
+
+### Сценарий 4: Ручной ответ на запрос
+
+**Запустите клиента alice:**
+
+    universal_client tcp://localhost:5555 alice
+    
+**Запустите клиента bob:**
+
+    universal_client tcp://localhost:5555 bob   
+
+**В клиенте alice:**
+
+    [alice] > request bob Как дела?
+
+**В клиенте bob:**
+
+    [RECEIVED] Message from alice [id=...]: Как дела?
+
+**В клиенте bob отправляем ручной ответ:**
+
+    [bob] > reply <correlation_id> У меня всё отлично, спасибо!
+
+**Ожидаемый результат в клиенте alice:**
+
+    [REPLY] From bob [id=...]: У меня всё отлично, спасибо!
+
+---
+
+### Сценарий 5: Статус клиента
+
+**В любом клиенте:**
+
+    [alice] > status
+
+**Ожидаемый результат:**
+
+    === Client Status ===
+    Name: alice
+    Connected: Yes
+    Pending requests: 0
+    =====================
+
+---
+
+### Сценарий 6: Офлайн-доставка
+
+**Запустите клиента alice (клиент bob не запущен):**
+
+    universal_client tcp://localhost:5555 alice
+
+**Отправьте сообщение от alice к bob с флагом ACK:**
+
+    [alice] > send_ack bob Сообщение для офлайн-доставки
+
+**Ожидаемый результат:**
+
+    Sent to bob [id=..., needs_ack]: Сообщение для офлайн-доставки
+    (bob не в сети, сообщение сохраняется в БД)
+
+**Отправьте ещё одно сообщение от alice к bob:**
+
+    [alice] > send bob Второе сообщение
+
+**Ожидаемый результат:**
+
+    Sent to bob [id=...]: Второе сообщение
+    (сообщение сохраняется в БД)
+
+**Запустите клиента bob:**
+
+    universal_client tcp://localhost:5555 bob
+
+**Ожидаемый результат при подключении bob:**
+
+    Connected to broker at tcp://localhost:5555
+    Registered as 'bob'
+
+**Ожидаемый результат в клиенте bob:**
+
+    [RECEIVED] Message from alice [id=...]: Сообщение для офлайн-доставки
+    [RECEIVED] Message from alice [id=...]: Второе сообщение
+
+**Ожидаемый результат в клиенте alice (ACK за первое сообщение):**
+
+    [ACK] Message ... delivered to bob
+
+---
+
+### Сценарий 7: Ответ офлайн-отправителю
+
+**Запустите клиента alice:(клиент bob не запущен)**
+
+    universal_client tcp://localhost:5555 alice
+
+**Отправьте сообщение от alice к bob с флагом ACK:**
+
+    [alice] > send_ack bob Сообщение для офлайн-доставки
+    
+**Ожидаемый результат:**
+
+    Sent to bob [id=..., needs_ack]: Сообщение для офлайн-доставки
+    (bob не в сети, сообщение сохраняется в БД)  
+    
+**Закройте клиента alice (Ctrl+C)**   
+
+**Запустите клиента bob:**
+
+    universal_client tcp://localhost:5555 bob
+
+**Ожидаемый результат при подключении bob:**
+
+    Connected to broker at tcp://localhost:5555
+    Registered as 'bob'
+
+**Ожидаемый результат в клиенте bob:**
+
+    [RECEIVED] Message from alice [id=...]: Сообщение для офлайн-доставки
+
+  **Запустите клиента alice:**
+
+    universal_client tcp://localhost:5555 alice  
+
+ **Ожидаемый результат в клиенте alice (ACK):**
+
+    [ACK] Message ... delivered to bob 
+    
+---
+
+### Сценарий 8: Отправка сообщения несуществующему клиенту
+
+**В клиенте alice:**
+
+    [alice] > send unknown_client Тест
+
+**Ожидаемый результат:**
+
+    Sent to unknown_client [id=...]: Тест
+    (сообщение сохраняется в БД со статусом PENDING)
+
+---
+
+### Сценарий 9: Выход из клиента
+
+**В любом клиенте:**
+
+    [alice] > quit
+
+**Ожидаемый результат:**
+
+    Unregistered
+    (клиент завершает работу)
+
+---
+
+### Важное примечание
+
+Для ручного тестирования удобно использовать именно 20 минут, так как это даёт достаточно времени для выполнения всех шагов без спешки.
+
+---
+
+### Удаление
+
+**Если установлено через make install:**
+
+    sudo rm -f /usr/bin/broker /usr/bin/universal_client
+
+**Если установлено через DEB пакет:**
+
+    sudo dpkg -r async-message-broker
+
+**Удаление базы данных (опционально):**
+
+    sudo rm -f /var/lib/broker/broker.db
 
 ## [Документация API](docs/api-documentation.md)
