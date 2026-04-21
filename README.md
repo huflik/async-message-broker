@@ -112,84 +112,81 @@ classDiagram
         +CheckExpiredAcks()
     }
     
+    class IMetrics {
+        <<interface>>
+        +IncrementMessagesReceived()
+        +IncrementMessagesSent()
+        +IncrementMessagesFailed()
+        +IncrementAcksReceived()
+        +IncrementMessagesExpired()
+        +IncrementOfflineDelivered()
+        +IncrementClientsRegistered()
+        +IncrementClientsUnregistered()
+        +IncrementClientsTimeout()
+        +SetActiveSessions(int)
+        +SetPendingSendQueueSize(size_t)
+        +ObservePayloadSize(size_t)
+        +AddMessageProcessingTime(double)
+    }
+    
     class IMessageHandler {
         <<interface>>
         +Handle(Message, HandlerContext)
     }
     
-    %% ========== КОНТЕКСТЫ И СТРУКТУРЫ ==========
-    class HandlerContext {
-        <<struct>>
-        +IStorage& storage
-        +ISessionManager& session_manager
-        +IMessageSender& message_sender
-        +IConfigProvider& config_provider
-        +zmq::message_t& identity
-    }
-    
+    %% ========== СТРУКТУРЫ ==========
     class Config {
-        <<struct>>
         +int Port
         +string DbPath
         +int Threads
         +string LogLevel
         +int SessionTimeout
         +int AckTimeout
+        +bool EnableMetrics
+        +string MetricsBindAddress
+        +int MetricsUpdateInterval
+        +ParseArgs() Config$
+        +PrintHelp()$
     }
     
     class PendingMessage {
-        <<struct>>
         +uint64_t id
         +Message msg
     }
     
-    class PendingSend {
-        <<struct>>
-        +zmq::message_t identity
-        +zmq::message_t data
-        +function~void(bool)~ callback
+    class HandlerContext {
+        +IStorage& storage
+        +ISessionManager& session_manager
+        +IMessageSender& message_sender
+        +IConfigProvider& config_provider
+        +zmq::message_t& identity
+        +shared_ptr~IMetrics~ metrics
     }
     
     %% ========== ОСНОВНЫЕ КЛАССЫ ==========
     class Server {
         -Config config_
-        -atomic~bool~ running_
-        -zmq::context_t zmq_context_
         -zmq::socket_t router_socket_
         -io_context io_context_
-        -unique_ptr~work~ work_guard_
-        -vector~thread~ threads_
-        -unique_ptr~stream_descriptor~ zmq_fd_
-        -unique_ptr~steady_timer~ cleanup_timer_
-        -unique_ptr~steady_timer~ ack_timeout_timer_
         -unique_ptr~Router~ router_
         -unique_ptr~Storage~ storage_
-        -queue~PendingSend~ pending_sends_
-        -mutex pending_sends_mutex_
-        -atomic~bool~ sending_in_progress_
+        -shared_ptr~MetricsManager~ metrics_manager_
         +Server(Config)
         +Run()
         +Stop()
         +SendToClient(zmq::message_t, zmq::message_t, callback)
         +GetConfig() Config
-        -SetupZmqSocket()
-        -SetupAsioIntegration()
-        -OnZmqEvent(error_code)
-        -AsioThread()
-        -SetupCleanupTimer()
-        -SetupAckTimeoutTimer()
-        -ProcessPendingSends()
-        -ScheduleSendProcessing()
+        +GetMetrics() shared_ptr~IMetrics~
     }
     
     class Router {
         -IStorage& storage_
         -IMessageSender& message_sender_
         -IConfigProvider& config_provider_
+        -shared_ptr~IMetrics~ metrics_
         -unordered_map~string, shared_ptr~Session~~ active_clients_
-        -unordered_map~string, string~ identity_to_name_
         -mutex registry_mutex_
-        +Router(IStorage&, IMessageSender&, IConfigProvider&)
+        +Router(IStorage&, IMessageSender&, IConfigProvider&, shared_ptr~IMetrics~)
         +RouteMessage(Message, zmq::message_t&)
         +FindSession(string) shared_ptr~Session~
         +RegisterClient(string, shared_ptr~Session~) bool
@@ -200,11 +197,6 @@ classDiagram
         +DeliverPendingReplies(string)
         +PersistMessageForClient(string, Message)
         +CheckExpiredAcks()
-        -HandleRegister(Message, zmq::message_t&)
-        -HandleMessage(Message)
-        -HandleReply(Message)
-        -HandleAck(Message)
-        -HandleUnregister(Message, zmq::message_t&)
     }
     
     class Storage {
@@ -226,22 +218,17 @@ classDiagram
         +LoadExpiredSent(int) vector~PendingMessage~
         +LoadPendingRepliesForSenderOnly(string) vector~PendingMessage~
         +LoadPendingMessagesOnly(string) vector~PendingMessage~
-        -CreateTables()
-        -ThrowOnDbError(int, string)
-        -SaveMessageWithStatus(Message, int) uint64_t
     }
     
     class Session {
         -zmq::message_t identity_
         -IMessageSender& message_sender_
-        -const Config& config_
         -string name_
         -bool is_online_
         -queue~Message~ outgoing_queue_
-        -mutable mutex queue_mutex_
+        -mutex queue_mutex_
         -time_point last_receive_
         -time_point last_activity_
-        -function~void(string, Message)~ persist_callback_
         +Session(zmq::message_t, IMessageSender&, Config&)
         +~Session()
         +SendMessage(Message) bool
@@ -256,10 +243,7 @@ classDiagram
         +UpdateLastActivity()
         +IsExpired(int) bool
         +PersistQueueToDatabase()
-        +SetPersistCallback(function)
         +GetQueueSize() size_t
-        -SendZmqMessage(Message) bool
-        -EnqueueMessage(Message)
     }
     
     class Message {
@@ -283,19 +267,37 @@ classDiagram
         +SetSender(string)
         +SetDestination(string)
         +SetPayload(vector~uint8_t~)
-        +HasFlag(uint8_t) bool
-        +SetFlag(uint8_t)
-        +ClearFlag(uint8_t)
         +NeedsReply() bool
-        +SetNeedsReply(bool)
         +NeedsAck() bool
-        +SetNeedsAck(bool)
         +Serialize() vector~uint8_t~
         +Deserialize(vector~uint8_t~)$ Message
         +ToString() string
     }
     
-    %% ========== ОБРАБОТЧИКИ СООБЩЕНИЙ ==========
+    class MetricsManager {
+        -atomic~uint64_t~ messages_received_
+        -atomic~uint64_t~ messages_sent_
+        -unique_ptr~Exposer~ exposer_
+        +MetricsManager()
+        +InitExposer(string)
+        +StartUpdater(seconds)
+        +StopUpdater()
+        +IncrementMessagesReceived()
+        +IncrementMessagesSent()
+        +IncrementMessagesFailed()
+        +IncrementAcksReceived()
+        +IncrementMessagesExpired()
+        +IncrementOfflineDelivered()
+        +IncrementClientsRegistered()
+        +IncrementClientsUnregistered()
+        +IncrementClientsTimeout()
+        +SetActiveSessions(int)
+        +SetPendingSendQueueSize(size_t)
+        +ObservePayloadSize(size_t)
+        +AddMessageProcessingTime(double)
+    }
+    
+    %% ========== ОБРАБОТЧИКИ ==========
     class RegisterHandler {
         +Handle(Message, HandlerContext)
     }
@@ -346,46 +348,47 @@ classDiagram
     }
     
     %% ========== ОТНОШЕНИЯ ==========
-    Server ..|> IMessageSender : implements
-    Server ..|> IConfigProvider : implements
-    Server *-- Router : contains
-    Server *-- Storage : contains
-    Server --> PendingSend : uses
+    Server ..|> IMessageSender
+    Server ..|> IConfigProvider
+    Server *-- Router
+    Server *-- Storage
+    Server *-- MetricsManager
     
-    Storage ..|> IStorage : implements
-    Storage --> PendingMessage : returns
-    Storage --> Message : stores
+    Storage ..|> IStorage
+    Storage --> PendingMessage
+    Storage --> Message
     
-    Router ..|> ISessionManager : implements
-    Router --> IStorage : uses
-    Router --> IMessageSender : uses
-    Router --> IConfigProvider : uses
-    Router *-- Session : manages
+    Router ..|> ISessionManager
+    Router --> IStorage
+    Router --> IMessageSender
+    Router --> IConfigProvider
+    Router --> IMetrics
+    Router *-- Session
     
-    Session --> IMessageSender : uses
-    Session --> Config : uses
-    Session --> Message : processes
+    Session --> IMessageSender
+    Session --> Config
+    Session --> Message
     
-    IMessageHandler <|.. RegisterHandler : implements
-    IMessageHandler <|.. MessageHandler : implements
-    IMessageHandler <|.. ReplyHandler : implements
-    IMessageHandler <|.. AckHandler : implements
-    IMessageHandler <|.. UnregisterHandler : implements
+    MetricsManager ..|> IMetrics
     
-    MessageHandlerFactory --> IMessageHandler : creates
-    MessageHandlerFactory ..> MessageType : uses
+    IMessageHandler <|.. RegisterHandler
+    IMessageHandler <|.. MessageHandler
+    IMessageHandler <|.. ReplyHandler
+    IMessageHandler <|.. AckHandler
+    IMessageHandler <|.. UnregisterHandler
+    
+    MessageHandlerFactory --> IMessageHandler
+    MessageHandlerFactory ..> MessageType
     
     HandlerContext --> IStorage
     HandlerContext --> ISessionManager
     HandlerContext --> IMessageSender
     HandlerContext --> IConfigProvider
+    HandlerContext --> IMetrics
     
-    Message --> MessageType : uses
-    Message --> MessageFlag : uses
-    Storage --> MessageStatus : uses
-    
-    Server --> Config : uses
-    Router --> Config : uses (via IConfigProvider)
+    Message --> MessageType
+    Message --> MessageFlag
+    Storage --> MessageStatus
 ```
 
 ## 🔄 Сценарии работы
