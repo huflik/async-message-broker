@@ -189,7 +189,7 @@ classDiagram
         +Router(IStorage&, IMessageSender&, IConfigProvider&, shared_ptr~IMetrics~)
         +RouteMessage(Message, zmq::message_t&)
         +FindSession(string) shared_ptr~Session~
-        +RegisterClient(string, shared_ptr~Session~) bool
+        +UpsertClient(string, shared_ptr~Session~) shared_ptr~Session~
         +UnregisterClient(string)
         +PrintActiveClients()
         +CleanupInactiveSessions()
