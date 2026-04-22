@@ -57,8 +57,14 @@ void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
 }
 
 std::shared_ptr<Session> Router::UpsertClient(const std::string& name, std::shared_ptr<Session> new_session) {
-    std::lock_guard<std::mutex> lock(registry_mutex_);
     
+    if (!new_session) {
+        spdlog::error("Attempt to upsert null session for client {}", name);
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(registry_mutex_);
+ 
     std::shared_ptr<Session> old_session = nullptr;
     
     auto it = active_clients_.find(name);
