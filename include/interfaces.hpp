@@ -52,7 +52,8 @@ public:
     virtual ~ISessionManager() = default;
     
     [[nodiscard]] virtual std::shared_ptr<Session> FindSession(const std::string& name) = 0;
-    [[nodiscard]] virtual bool RegisterClient(const std::string& name, std::shared_ptr<Session> session) = 0;
+    [[nodiscard]] virtual std::shared_ptr<Session> UpsertClient(const std::string& name, std::shared_ptr<Session> new_session) = 0;
+
     virtual void UnregisterClient(const std::string& name) = 0;
     virtual void PrintActiveClients() = 0;
     virtual void CleanupInactiveSessions() = 0;

@@ -56,30 +56,52 @@ void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
     }
 }
 
-bool Router::RegisterClient(const std::string& name, std::shared_ptr<Session> session) {
+std::shared_ptr<Session> Router::UpsertClient(const std::string& name, std::shared_ptr<Session> new_session) {
     std::lock_guard<std::mutex> lock(registry_mutex_);
     
-    if (active_clients_.find(name) != active_clients_.end()) {
-        spdlog::warn("Client name {} already taken", name);
-        return false;
+    std::shared_ptr<Session> old_session = nullptr;
+    
+    auto it = active_clients_.find(name);
+    if (it != active_clients_.end()) {
+        old_session = it->second;
+        
+        spdlog::debug("Client {} already exists, replacing old session", name);
+        
+        old_session->PersistQueueToDatabase();
+        old_session->MarkOffline();
+        
+        const auto& old_identity = old_session->GetIdentity();
+        std::string old_identity_str(
+            reinterpret_cast<const char*>(old_identity.data()),
+            old_identity.size()
+        );
+        identity_to_name_.erase(old_identity_str);
+        
+        active_clients_[name] = new_session;
+    } else {
+        active_clients_[name] = new_session;
     }
     
-    active_clients_[name] = session;
-    
-    const auto& identity = session->GetIdentity();
-    std::string identity_str(
-        reinterpret_cast<const char*>(identity.data()),
-        identity.size()
+    const auto& new_identity = new_session->GetIdentity();
+    std::string new_identity_str(
+        reinterpret_cast<const char*>(new_identity.data()),
+        new_identity.size()
     );
-    identity_to_name_[identity_str] = name;
+    identity_to_name_[new_identity_str] = name;
     
     if (metrics_) {
-        metrics_->IncrementClientsRegistered();
         metrics_->SetActiveSessions(active_clients_.size());
+        if (old_session) {
+            metrics_->IncrementClientsUnregistered();
+            metrics_->IncrementClientsRegistered();
+        } else {
+            metrics_->IncrementClientsRegistered();
+        }
     }
     
-    spdlog::debug("Client registered: {}", name);
-    return true;
+    spdlog::debug("Client {} upsert completed, active sessions: {}", name, active_clients_.size());
+    
+    return old_session;
 }
 
 void Router::UnregisterClient(const std::string& name) {

@@ -43,8 +43,8 @@ TEST_F(RouterTest, RegisterClient) {
     
     session->SetName("bob");
     
-    bool result = router->RegisterClient("bob", session);
-    EXPECT_TRUE(result);
+    auto old_session = router->UpsertClient("bob", session);
+    EXPECT_EQ(old_session, nullptr);  // Не было старой сессии
     
     auto found = router->FindSession("bob");
     EXPECT_NE(found, nullptr);
@@ -60,8 +60,22 @@ TEST_F(RouterTest, RegisterDuplicateClient) {
     auto session2 = std::make_shared<Session>(std::move(identity2), mock_sender, config);
     session2->SetName("bob");
     
-    EXPECT_TRUE(router->RegisterClient("bob", session1));
-    EXPECT_FALSE(router->RegisterClient("bob", session2));
+    auto old_session1 = router->UpsertClient("bob", session1);
+    EXPECT_EQ(old_session1, nullptr);
+    
+    auto old_session2 = router->UpsertClient("bob", session2);
+    EXPECT_NE(old_session2, nullptr);  // Была старая сессия
+    EXPECT_EQ(old_session2->GetName(), "bob");
+
+    auto found = router->FindSession("bob");
+    EXPECT_NE(found, nullptr);
+    EXPECT_EQ(found->GetName(), "bob");
+
+    std::string identity_str(
+        reinterpret_cast<const char*>(found->GetIdentity().data()),
+        found->GetIdentity().size()
+    );
+    EXPECT_EQ(identity_str, "bob2");
 }
 
 TEST_F(RouterTest, UnregisterClient) {
@@ -69,7 +83,7 @@ TEST_F(RouterTest, UnregisterClient) {
     auto session = std::make_shared<Session>(std::move(identity), mock_sender, config);
     session->SetName("bob");
     
-    router->RegisterClient("bob", session);
+    router->UpsertClient("bob", session);
     router->UnregisterClient("bob");
     
     auto found = router->FindSession("bob");
@@ -189,7 +203,7 @@ TEST_F(RouterTest, PrintActiveClients) {
     auto session = std::make_shared<Session>(std::move(identity), mock_sender, config);
     session->SetName("bob");
     
-    router->RegisterClient("bob", session);
+    router->UpsertClient("bob", session);
     
     EXPECT_NO_THROW(router->PrintActiveClients());
 }
@@ -200,8 +214,8 @@ TEST_F(RouterTest, RegisterClientSetsCorrectName) {
     
     session->SetName("alice");
     
-    bool result = router->RegisterClient("alice", session);
-    EXPECT_TRUE(result);
+    auto old_session = router->UpsertClient("alice", session);
+    EXPECT_EQ(old_session, nullptr);
     
     auto found = router->FindSession("alice");
     ASSERT_NE(found, nullptr);

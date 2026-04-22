@@ -25,7 +25,8 @@ public:
     void RouteMessage(const Message& msg, const zmq::message_t& identity);
     
     [[nodiscard]] std::shared_ptr<Session> FindSession(const std::string& name) override;
-    [[nodiscard]] bool RegisterClient(const std::string& name, std::shared_ptr<Session> session) override;
+    [[nodiscard]] std::shared_ptr<Session> UpsertClient(const std::string& name, std::shared_ptr<Session> new_session) override;
+
     void UnregisterClient(const std::string& name) override;
     void PrintActiveClients() override;
     void CleanupInactiveSessions() override;
@@ -34,6 +35,7 @@ public:
     void DeliverPendingReplies(const std::string& name);
     void PersistMessageForClient(const std::string& client_name, const Message& msg);
     void CheckExpiredAcks();
+ 
 
 private:
     void UpdateSessionMetrics();   

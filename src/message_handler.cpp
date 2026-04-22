@@ -14,23 +14,6 @@ void RegisterHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     
     spdlog::info("Registering client: {}", client_name);
     
-    auto existing_session = ctx.session_manager.FindSession(client_name);
-    if (existing_session) {
-        spdlog::warn("Client {} already registered, replacing old session", client_name);
-        
-        const auto& old_identity = existing_session->GetIdentity();
-        std::string old_identity_str(
-            reinterpret_cast<const char*>(old_identity.data()),
-            old_identity.size()
-        );
-        
-        existing_session->PersistQueueToDatabase();
-        existing_session->MarkOffline();
-        ctx.session_manager.UnregisterClient(client_name);
-        
-        spdlog::debug("Old session for {} completely removed", client_name);
-    }
-    
     zmq::message_t identity_copy(ctx.identity.size());
     std::memcpy(identity_copy.data(), ctx.identity.data(), ctx.identity.size());
     
@@ -44,18 +27,21 @@ void RegisterHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     session->UpdateLastActivity();
     session->UpdateLastReceive();
     
-    session->SetPersistCallback([&ctx](const std::string& name, const Message& m) {
-        ctx.session_manager.PersistMessageForClient(name, m);
+    auto ctx_ptr = std::make_shared<HandlerContext>(ctx);
+    session->SetPersistCallback([ctx_ptr](const std::string& name, const Message& m) {
+        ctx_ptr->session_manager.PersistMessageForClient(name, m);
     });
     
-    if (ctx.session_manager.RegisterClient(client_name, session)) {
-        spdlog::info("Client {} registered successfully", client_name);
-        
-        ctx.session_manager.DeliverOfflineMessages(client_name);
-        ctx.session_manager.DeliverPendingReplies(client_name);
+    auto old_session = ctx.session_manager.UpsertClient(client_name, session);
+    
+    if (old_session) {
+        spdlog::info("Client {} re-registered, old session replaced", client_name);
     } else {
-        spdlog::error("Failed to register client {}", client_name);
+        spdlog::info("Client {} registered successfully", client_name);
     }
+    
+    ctx.session_manager.DeliverOfflineMessages(client_name);
+    ctx.session_manager.DeliverPendingReplies(client_name);
     
     ctx.session_manager.PrintActiveClients();
 }
@@ -65,87 +51,174 @@ void MessageHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     
     spdlog::debug("Routing message to: {}", destination);
     
-    uint64_t message_id = ctx.storage.SaveMessage(msg);
-    spdlog::debug("Message saved to database with id: {}", message_id);
-    
-    if (msg.NeedsReply() || msg.NeedsAck()) {
-        ctx.storage.SaveCorrelation(message_id, msg.GetCorrelationId(), msg.GetSender());
-        spdlog::debug("Saved correlation: message_id={}, corr_id={}, sender={}", 
-                      message_id, msg.GetCorrelationId(), msg.GetSender());
-    }
-    
     auto session = ctx.session_manager.FindSession(destination);
+    bool can_deliver_immediately = session && session->IsOnline();
     
-    bool can_deliver = false;
-    if (session) {
-        session->UpdateLastReceive();
-        if (session->IsOnline()) {
-            can_deliver = true;
+    uint64_t message_id = 0;
+    
+    try {
+        message_id = ctx.storage.SaveMessage(msg);
+        spdlog::debug("Message saved to database with id: {}, status PENDING", message_id);
+        
+        if (msg.NeedsReply() || msg.NeedsAck()) {
+            ctx.storage.SaveCorrelation(message_id, msg.GetCorrelationId(), msg.GetSender());
+            spdlog::debug("Saved correlation: message_id={}, corr_id={}, sender={}", 
+                          message_id, msg.GetCorrelationId(), msg.GetSender());
         }
+        
+        if (!can_deliver_immediately) {
+            spdlog::info("Destination {} offline, message {} stored in database", destination, message_id);
+            return;
+        }
+        
+    } catch (const std::exception& e) {
+        spdlog::error("Database operation failed: {}. Message will not be sent.", e.what());
+        if (ctx.metrics) {
+            ctx.metrics->IncrementMessagesFailed();
+        }
+        return;
     }
     
-    if (can_deliver && session && session->IsOnline()) {
-        spdlog::debug("Destination {} online, sending immediately", destination);
-        
-        if (msg.NeedsAck()) {
-            ctx.storage.MarkSent(message_id);
-            spdlog::debug("Message {} marked as SENT, waiting for ACK", message_id);
-        }
+    try {
+        session->UpdateLastReceive();
         
         if (session->SendMessage(msg)) {
-            if (!msg.NeedsAck()) {
-                ctx.storage.MarkDelivered(message_id);
-                spdlog::debug("Message {} delivered and marked as delivered", message_id);
+            try {
+                if (msg.NeedsAck()) {
+                    ctx.storage.MarkSent(message_id);
+                    spdlog::debug("Message {} marked as SENT, waiting for ACK", message_id);
+                } else {
+                    ctx.storage.MarkDelivered(message_id);
+                    spdlog::debug("Message {} delivered and marked as DELIVERED", message_id);
+                }
+            } catch (const std::exception& e) {
+                spdlog::error("Failed to update message status after successful send: {}", e.what());
+                if (ctx.metrics) {
+                    ctx.metrics->IncrementMessagesFailed();
+                }
             }
+            spdlog::debug("Message sent successfully to {}", destination);
         } else {
-            spdlog::info("Failed to send message to {}, marking offline", destination);
+            spdlog::warn("Failed to send message to {}, rolling back status", destination);
+            
+            try {
+                ctx.storage.MarkPending(message_id);
+                spdlog::debug("Message {} status remains PENDING (rolled back)", message_id);
+            } catch (const std::exception& e) {
+                spdlog::error("Failed to rollback message status: {}", e.what());
+            }
+            
             session->MarkOffline();
+            
+            if (ctx.metrics) {
+                ctx.metrics->IncrementMessagesFailed();
+            }
         }
-    } else {
-        spdlog::info("Destination {} offline, message {} stored in database", destination, message_id);
+        
+    } catch (const std::exception& e) {
+        spdlog::error("Exception during send to {}: {}. Rolling back status.", destination, e.what());
+        
+        try {
+            ctx.storage.MarkPending(message_id);
+            spdlog::debug("Message {} status rolled back to PENDING after exception", message_id);
+        } catch (const std::exception& db_e) {
+            spdlog::error("Failed to rollback message status after exception: {}", db_e.what());
+        }
+        
+        session->MarkOffline();
+        
+        if (ctx.metrics) {
+            ctx.metrics->IncrementMessagesFailed();
+        }
     }
 }
 
 void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     spdlog::debug("Handling reply with correlation_id: {}", msg.GetCorrelationId());
     
-    std::string original_sender = ctx.storage.FindOriginalSenderByCorrelation(msg.GetCorrelationId());
-    
     Message reply_msg = msg;
+    std::string original_sender;
+    uint64_t message_id = 0;
     
-    if (!original_sender.empty()) {
-        reply_msg.SetDestination(original_sender);
-        spdlog::debug("Reply redirected to original sender: {}", original_sender);
+    try {
+        original_sender = ctx.storage.FindOriginalSenderByCorrelation(msg.GetCorrelationId());
+        
+        if (!original_sender.empty()) {
+            reply_msg.SetDestination(original_sender);
+            spdlog::debug("Reply redirected to original sender: {}", original_sender);
+        }
+        
+        message_id = ctx.storage.SaveMessage(reply_msg);
+        spdlog::debug("Reply saved to database with id: {}, status PENDING", message_id);
+        
+        std::string correlation_owner = !original_sender.empty() ? original_sender : reply_msg.GetDestination();
+        ctx.storage.SaveCorrelation(message_id, msg.GetCorrelationId(), correlation_owner);
+        spdlog::debug("Saved correlation for reply: message_id={}, corr_id={}, owner={}", 
+                      message_id, msg.GetCorrelationId(), correlation_owner);
+        
+    } catch (const std::exception& e) {
+        spdlog::error("Database operation failed for reply: {}. Reply will not be sent.", e.what());
+        if (ctx.metrics) {
+            ctx.metrics->IncrementMessagesFailed();
+        }
+        return; 
     }
     
     const std::string& destination = reply_msg.GetDestination();
-    
-    uint64_t message_id = ctx.storage.SaveMessage(reply_msg);
-    spdlog::debug("Reply saved to database with id: {}", message_id);
-    
-    std::string correlation_owner = !original_sender.empty() ? original_sender : reply_msg.GetDestination();
-    ctx.storage.SaveCorrelation(message_id, msg.GetCorrelationId(), correlation_owner);
-    spdlog::debug("Saved correlation for reply: message_id={}, corr_id={}, owner={}", 
-                  message_id, msg.GetCorrelationId(), correlation_owner);
-    
     auto session = ctx.session_manager.FindSession(destination);
     
     if (session && session->IsOnline()) {
-        if (reply_msg.NeedsAck()) {
-            ctx.storage.MarkSent(message_id);
-        }
-        
-        if (session->SendMessage(reply_msg)) {
-            if (!reply_msg.NeedsAck()) {
-                ctx.storage.MarkDelivered(message_id);
+        try {
+            if (reply_msg.NeedsAck()) {
+                ctx.storage.MarkSent(message_id);
+                spdlog::debug("Reply {} marked as SENT, waiting for ACK", message_id);
             }
-            return;
+            
+            if (session->SendMessage(reply_msg)) {
+                if (!reply_msg.NeedsAck()) {
+                    ctx.storage.MarkDelivered(message_id);
+                    spdlog::debug("Reply {} delivered and marked as DELIVERED", message_id);
+                }
+                spdlog::debug("Reply sent successfully to {}", destination);
+                return;
+            }
+            
+            spdlog::warn("Failed to send reply to {}, marking offline", destination);
+            
+            if (reply_msg.NeedsAck()) {
+                try {
+                    ctx.storage.MarkPending(message_id);
+                    spdlog::debug("Reply {} status rolled back to PENDING", message_id);
+                } catch (const std::exception& e) {
+                    spdlog::error("Failed to rollback reply status: {}", e.what());
+                }
+            }
+            
+            session->MarkOffline();
+            
+            if (ctx.metrics) {
+                ctx.metrics->IncrementMessagesFailed();
+            }
+            
+        } catch (const std::exception& e) {
+            spdlog::error("Exception during reply send to {}: {}. Rolling back status.", destination, e.what());
+            
+            try {
+                ctx.storage.MarkPending(message_id);
+                spdlog::debug("Reply {} status rolled back to PENDING after exception", message_id);
+            } catch (const std::exception& db_e) {
+                spdlog::error("Failed to rollback reply status after exception: {}", db_e.what());
+            }
+            
+            session->MarkOffline();
+            
+            if (ctx.metrics) {
+                ctx.metrics->IncrementMessagesFailed();
+            }
         }
-        
-        session->MarkOffline();
+    } else {
+        spdlog::info("Reply {} stored in database for later delivery to {}", message_id, destination);
     }
-    
-    spdlog::info("Reply {} stored in database for later delivery to {}", message_id, destination);
 }
 
 void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
