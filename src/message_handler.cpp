@@ -82,7 +82,9 @@ void MessageHandler::Handle(const Message& msg, const HandlerContext& ctx) {
     try {
         session->UpdateLastReceive();
         
-        if (session->SendMessage(msg)) {
+        Message msg_copy = msg;
+        
+        if (session->SendMessage(std::move(msg_copy))) {
             try {
                 if (msg.NeedsAck()) {
                     ctx.storage.MarkSent(message_id);
@@ -161,7 +163,7 @@ void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
         if (ctx.metrics) {
             ctx.metrics->IncrementMessagesFailed();
         }
-        return; 
+        return;
     }
     
     const std::string& destination = reply_msg.GetDestination();
@@ -174,7 +176,9 @@ void ReplyHandler::Handle(const Message& msg, const HandlerContext& ctx) {
                 spdlog::debug("Reply {} marked as SENT, waiting for ACK", message_id);
             }
             
-            if (session->SendMessage(reply_msg)) {
+            Message reply_to_send = reply_msg;
+            
+            if (session->SendMessage(std::move(reply_to_send))) {
                 if (!reply_msg.NeedsAck()) {
                     ctx.storage.MarkDelivered(message_id);
                     spdlog::debug("Reply {} delivered and marked as DELIVERED", message_id);
@@ -266,7 +270,7 @@ void AckHandler::Handle(const Message& msg, const HandlerContext& ctx) {
                 ack_notification.SetDestination(original_sender);
                 ack_notification.SetCorrelationId(acked_correlation_id);
                 
-                if (session->SendMessage(ack_notification)) {
+                if (session->SendMessage(std::move(ack_notification))) {
                     spdlog::debug("ACK notification sent to original sender: {}", original_sender);
                 } else {
                     spdlog::warn("Failed to send ACK notification to {}", original_sender);
@@ -323,4 +327,4 @@ std::unique_ptr<IMessageHandler> MessageHandlerFactory::Create(MessageType type)
     }
 }
 
-} 
+}

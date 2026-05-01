@@ -57,7 +57,6 @@ void Router::RouteMessage(const Message& msg, const zmq::message_t& identity) {
 }
 
 std::shared_ptr<Session> Router::UpsertClient(const std::string& name, std::shared_ptr<Session> new_session) {
-    
     if (!new_session) {
         spdlog::error("Attempt to upsert null session for client {}", name);
         return nullptr;
@@ -173,7 +172,7 @@ void Router::DeliverOfflineMessages(const std::string& name) {
     session->UpdateLastActivity();
     session->UpdateLastReceive();
     
-    for (const auto& pending : pending_messages) {
+    for (auto& pending : pending_messages) {
         if (!session->IsOnline()) {
             spdlog::warn("Client {} went offline during delivery, stopping", name);
             break;
@@ -183,7 +182,7 @@ void Router::DeliverOfflineMessages(const std::string& name) {
             storage_.MarkSent(pending.id);
         }
         
-        if (session->SendMessage(pending.msg)) {
+        if (session->SendMessage(std::move(pending.msg))) {
             if (!pending.msg.NeedsAck()) {
                 storage_.MarkDelivered(pending.id);
                 spdlog::debug("Delivered offline message id={} to {} (no ACK needed)", pending.id, name);
@@ -228,7 +227,7 @@ void Router::DeliverPendingReplies(const std::string& name) {
     session->UpdateLastActivity();
     session->UpdateLastReceive();
     
-    for (const auto& reply : pending_replies) {
+    for (auto& reply : pending_replies) {
         if (!session->IsOnline()) {
             spdlog::warn("Client {} went offline during reply delivery, stopping", name);
             break;
@@ -238,7 +237,7 @@ void Router::DeliverPendingReplies(const std::string& name) {
             storage_.MarkSent(reply.id);
         }
         
-        if (session->SendMessage(reply.msg)) {
+        if (session->SendMessage(std::move(reply.msg))) {
             storage_.MarkDelivered(reply.id);
             spdlog::debug("Delivered pending reply id={} to {}", reply.id, name);
         } else {
@@ -326,7 +325,7 @@ void Router::CheckExpiredAcks() {
         metrics_->IncrementMessagesExpired();
     }
     
-    for (const auto& pending : expired_messages) {
+    for (auto& pending : expired_messages) {
         spdlog::warn("Message {} expired (no ACK received after {} seconds), resetting to PENDING", 
                      pending.id, ack_timeout_seconds);
         
@@ -346,7 +345,7 @@ void Router::CheckExpiredAcks() {
         if (session) {
             spdlog::debug("Retrying delivery of expired message {} to {}", pending.id, destination);
             storage_.MarkSent(pending.id);
-            if (session->SendMessage(pending.msg)) {
+            if (session->SendMessage(std::move(pending.msg))) {
                 spdlog::debug("Retry successful for message {}", pending.id);
             } else {
                 spdlog::warn("Retry failed for message {}", pending.id);

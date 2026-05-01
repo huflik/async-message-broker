@@ -15,10 +15,8 @@ struct PendingMessage {
     Message msg;
 
     PendingMessage() = default;
-
     PendingMessage(const PendingMessage&) = default;
     PendingMessage& operator=(const PendingMessage&) = default;
-
     PendingMessage(PendingMessage&&) noexcept = default;
     PendingMessage& operator=(PendingMessage&&) noexcept = default;
 };
@@ -27,6 +25,30 @@ enum MessageStatus : int {
     STATUS_PENDING = 0,       
     STATUS_DELIVERED = 1,    
     STATUS_SENT = 2          
+};
+
+class SqliteStmt {
+public:
+    explicit SqliteStmt(sqlite3* db, const char* sql) {
+        sqlite3_stmt* raw_stmt = nullptr;
+        int rc = sqlite3_prepare_v2(db, sql, -1, &raw_stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            throw std::runtime_error("Failed to prepare statement: " + 
+                                     std::string(sqlite3_errmsg(db)));
+        }
+        stmt_.reset(raw_stmt);
+    }
+    
+    sqlite3_stmt* get() const { return stmt_.get(); }
+    operator sqlite3_stmt*() const { return stmt_.get(); }
+    
+private:
+    struct Deleter {
+        void operator()(sqlite3_stmt* stmt) const {
+            if (stmt) sqlite3_finalize(stmt);
+        }
+    };
+    std::unique_ptr<sqlite3_stmt, Deleter> stmt_;
 };
 
 class Storage : public IStorage {
@@ -50,11 +72,29 @@ public:
 
 private:
     void CreateTables();
-    uint64_t SaveMessageWithStatus(const Message& msg, int status);   
+    void PrepareStatements();
+    uint64_t SaveMessageWithStatus(const Message& msg, int status);
+    
+    void ResetStatement(sqlite3_stmt* stmt);
     
     sqlite3* db_ = nullptr;
     std::string db_path_;
     std::mutex db_mutex_;
+    
+    std::unique_ptr<SqliteStmt> insert_message_stmt_;
+    std::unique_ptr<SqliteStmt> update_delivered_stmt_;
+    std::unique_ptr<SqliteStmt> update_sent_stmt_;
+    std::unique_ptr<SqliteStmt> update_pending_stmt_;
+    std::unique_ptr<SqliteStmt> select_needs_ack_stmt_;
+    std::unique_ptr<SqliteStmt> insert_correlation_stmt_;
+    std::unique_ptr<SqliteStmt> select_original_sender_stmt_;
+    std::unique_ptr<SqliteStmt> select_message_id_by_corr_stmt_;
+    std::unique_ptr<SqliteStmt> select_message_id_by_corr_dest_stmt_;
+    std::unique_ptr<SqliteStmt> select_original_sender_by_msg_id_stmt_;
+    std::unique_ptr<SqliteStmt> delete_correlation_stmt_;
+    std::unique_ptr<SqliteStmt> select_expired_sent_stmt_;
+    std::unique_ptr<SqliteStmt> select_pending_messages_stmt_;
+    std::unique_ptr<SqliteStmt> select_pending_replies_stmt_;
 };
 
 }

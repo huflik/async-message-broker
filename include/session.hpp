@@ -6,7 +6,7 @@
 #include <mutex>
 #include <chrono>
 #include <functional>
-#include <future>
+#include <atomic>
 #include <zmq.hpp>
 
 #include "message.hpp"
@@ -23,9 +23,10 @@ public:
     
     ~Session();
     
-    [[nodiscard]] bool SendMessage(const Message& msg);
+    bool SendMessage(Message msg);
+    
     std::string GetName() const noexcept { return name_; }
-    bool IsOnline() const noexcept { return is_online_; }
+    bool IsOnline() const noexcept { return is_online_.load(std::memory_order_acquire); }
     
     const zmq::message_t& GetIdentity() const noexcept { return identity_; }
     
@@ -33,12 +34,12 @@ public:
     void FlushQueue();
     
     void MarkOffline() noexcept { 
-        is_online_ = false; 
+        is_online_.store(false, std::memory_order_release);
         spdlog::debug("Client {} marked as offline", name_);
     }
     
     void MarkOnline() noexcept {
-        is_online_ = true;
+        is_online_.store(true, std::memory_order_release);
         spdlog::debug("Client {} marked as online", name_);
     }
     
@@ -53,7 +54,7 @@ public:
     }
     
     bool IsExpired(int timeout_seconds) const noexcept {
-        if (!is_online_) return true;
+        if (!IsOnline()) return true;
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_receive_);
         return elapsed.count() > timeout_seconds;
@@ -65,15 +66,14 @@ public:
         persist_callback_ = std::move(callback);
     }
     
-    
     size_t GetQueueSize() const noexcept {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         return outgoing_queue_.size();
     }
 
 private:
-    [[nodiscard]] bool SendZmqMessage(const Message& msg);
-    void EnqueueMessage(const Message& msg);
+    void SendZmqMessage(Message msg);
+    void EnqueueMessage(Message msg);
     
     zmq::message_t identity_;
     
@@ -81,7 +81,7 @@ private:
     const Config& config_;             
     
     std::string name_;
-    bool is_online_ = true;
+    std::atomic<bool> is_online_{true};
     std::queue<Message> outgoing_queue_;
     mutable std::mutex queue_mutex_;
     std::chrono::steady_clock::time_point last_receive_;

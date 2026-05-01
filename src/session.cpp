@@ -38,8 +38,7 @@ void Session::PersistQueueToDatabase() {
     
     size_t persisted_count = 0;
     while (!outgoing_queue_.empty()) {
-        const auto& msg = outgoing_queue_.front();
-        persist_callback_(name_, msg);
+        persist_callback_(name_, outgoing_queue_.front());
         persisted_count++;
         outgoing_queue_.pop();
     }
@@ -47,19 +46,20 @@ void Session::PersistQueueToDatabase() {
     spdlog::debug("Persisted {} messages for {}", persisted_count, name_);
 }
 
-bool Session::SendMessage(const Message& msg) {
+bool Session::SendMessage(Message msg) {
     UpdateLastActivity();
     
-    if (!is_online_) {
-        EnqueueMessage(msg);
+    if (!IsOnline()) {
+        EnqueueMessage(std::move(msg));
         spdlog::debug("Client {} offline, message queued", name_);
         return true;
     }
     
-    return SendZmqMessage(msg);
+    SendZmqMessage(std::move(msg));
+    return true;
 }
 
-bool Session::SendZmqMessage(const Message& msg) {
+void Session::SendZmqMessage(Message msg) {
     try {
         auto serialized = msg.Serialize();
         
@@ -68,59 +68,30 @@ bool Session::SendZmqMessage(const Message& msg) {
         
         zmq::message_t data(serialized.data(), serialized.size());
         
-        auto promise = std::make_shared<std::promise<bool>>();
-        std::weak_ptr<std::promise<bool>> weak_promise = promise;
-        std::shared_future<bool> future = promise->get_future();
+        std::string client_name = name_;
         
         message_sender_.SendToClient(std::move(identity_copy), std::move(data), 
-            [weak_promise, this](bool success) {
-                auto p = weak_promise.lock();
-                if (!p) {
-                    spdlog::debug("Promise already destroyed for {}, callback ignored", name_);
-                    return;
-                }
-                
+            [this, client_name](bool success) {
                 if (!success) {
-                    spdlog::warn("Send callback reported failure for {}", name_);
-                    is_online_ = false;
+                    spdlog::warn("Failed to send message to {}, marking offline", client_name);
+                    MarkOffline();
+                } else {
+                    spdlog::trace("Message sent to {}", client_name);
                 }
-                p->set_value(success);
             });
-        
-        auto status = future.wait_for(std::chrono::milliseconds(1000));
-        if (status == std::future_status::timeout) {
-            spdlog::warn("Send timeout for client {}, marking offline", name_);
-            is_online_ = false;
-            promise.reset(); 
-            return false;
-        }
-        
-        bool sent = future.get();
-        
-        if (sent) {
-            spdlog::debug("Message sent to client {}: {}", name_, msg.ToString());
-            UpdateLastReceive();
-        } else {
-            spdlog::warn("Failed to send message to {}, marking offline", name_);
-            is_online_ = false;
-        }
-        
-        return sent;
         
     } catch (const zmq::error_t& e) {
         spdlog::error("ZMQ error sending to {}: {}, marking offline", name_, e.what());
-        is_online_ = false;
-        return false;
+        MarkOffline();
     } catch (const std::exception& e) {
         spdlog::error("Failed to send message to {}: {}, marking offline", name_, e.what());
-        is_online_ = false;
-        return false;
+        MarkOffline();
     }
 }
 
-void Session::EnqueueMessage(const Message& msg) {
+void Session::EnqueueMessage(Message msg) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
-    outgoing_queue_.push(msg);
+    outgoing_queue_.push(std::move(msg));
     spdlog::debug("Message queued for client {}, queue size: {}", name_, outgoing_queue_.size());
     
     constexpr size_t QUEUE_PERSIST_THRESHOLD = 100;
@@ -130,8 +101,7 @@ void Session::EnqueueMessage(const Message& msg) {
         
         size_t to_persist = outgoing_queue_.size() / 2;
         for (size_t i = 0; i < to_persist && !outgoing_queue_.empty(); ++i) {
-            const auto& oldest = outgoing_queue_.front();
-            persist_callback_(name_, oldest);
+            persist_callback_(name_, outgoing_queue_.front());
             outgoing_queue_.pop();
         }
         spdlog::debug("Persisted {} messages, {} remaining in queue", to_persist, outgoing_queue_.size());
@@ -144,24 +114,22 @@ void Session::FlushQueue() {
     spdlog::debug("Flushing queue for client {}, size: {}", name_, outgoing_queue_.size());
     
     size_t sent_count = 0;
-    size_t failed_count = 0;
     
     while (!outgoing_queue_.empty()) {
-        auto msg = outgoing_queue_.front();
-        outgoing_queue_.pop();
-        
-        if (SendZmqMessage(msg)) {
-            sent_count++;
-        } else {
-            spdlog::warn("Failed to send queued message to {}, re-queuing", name_);
-            outgoing_queue_.push(msg);
-            failed_count++;
+        if (!IsOnline()) {
+            spdlog::debug("Client {} went offline during flush, stopping", name_);
             break;
         }
+        
+        auto msg = std::move(outgoing_queue_.front());
+        outgoing_queue_.pop();
+        
+        SendZmqMessage(std::move(msg));
+        sent_count++;
     }
     
-    if (sent_count > 0 || failed_count > 0) {
-        spdlog::debug("Flushed {} messages to {}, {} failed", sent_count, name_, failed_count);
+    if (sent_count > 0) {
+        spdlog::debug("Flushed {} messages to {}", sent_count, name_);
     }
 }
 
